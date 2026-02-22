@@ -1,0 +1,336 @@
+use eframe::egui;
+use egui::TextureHandle;
+use emu_common::SystemEmulator;
+
+use crate::audio::AudioOutput;
+use crate::config::Config;
+use crate::input;
+use crate::menu::{self, MenuAction};
+use crate::screens::system_select::{SystemAction, SystemChoice};
+
+/// Application screen state.
+enum Screen {
+    SystemSelect,
+    Emulation,
+}
+
+/// Main application state.
+pub struct EmuApp {
+    screen: Screen,
+    system: Option<Box<dyn SystemEmulator>>,
+    selected_system: Option<SystemChoice>,
+    texture: Option<TextureHandle>,
+    audio: Option<AudioOutput>,
+    config: Config,
+    audio_buffer: Vec<f32>,
+    error_msg: Option<String>,
+}
+
+impl EmuApp {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        let config = Config::load();
+        let audio = AudioOutput::new();
+        if audio.is_none() {
+            log::warn!("Failed to initialize audio output");
+        }
+
+        Self {
+            screen: Screen::SystemSelect,
+            system: None,
+            selected_system: None,
+            texture: None,
+            audio,
+            config,
+            audio_buffer: vec![0.0; 2048],
+            error_msg: None,
+        }
+    }
+
+    /// Start a system emulator and switch to the emulation screen.
+    fn start_system(&mut self, mut sys: Box<dyn SystemEmulator>) {
+        if let Some(ref audio) = self.audio {
+            sys.set_sample_rate(audio.sample_rate);
+        }
+        self.system = Some(sys);
+        self.screen = Screen::Emulation;
+        self.texture = None;
+        self.error_msg = None;
+    }
+
+    /// Boot a system with just system ROMs (no game file).
+    /// Currently only meaningful for C64 (boots to BASIC prompt).
+    fn boot_system(&mut self, system: SystemChoice) {
+        let roms_dir = crate::system_roms::resolve_roms_dir(&self.config.system_roms_dir);
+
+        match system {
+            SystemChoice::C64 => {
+                let (basic, kernal, chargen) = crate::system_roms::load_c64_roms(&roms_dir);
+                if let (Some(basic), Some(kernal), Some(chargen)) = (basic, kernal, chargen) {
+                    let mut c64 = emu_c64::C64::with_roms(&basic, &kernal, &chargen);
+                    c64.reset();
+                    self.selected_system = Some(system);
+                    self.start_system(Box::new(c64));
+                } else {
+                    self.error_msg = Some(
+                        "C64 system ROMs not found. Place basic.rom, kernal.rom, \
+                         chargen.rom in roms/c64/"
+                            .into(),
+                    );
+                }
+            }
+            SystemChoice::Apple2 => {
+                if let Some(rom) = crate::system_roms::load_apple2_rom(&roms_dir) {
+                    match emu_apple2::Apple2::from_rom(&rom) {
+                        Ok(a2) => {
+                            self.selected_system = Some(system);
+                            self.start_system(Box::new(a2));
+                        }
+                        Err(e) => self.error_msg = Some(format!("Failed to boot Apple II: {}", e)),
+                    }
+                } else {
+                    self.error_msg = Some(
+                        "Apple II ROM not found. Place apple2plus.rom in roms/apple2/".into(),
+                    );
+                }
+            }
+            _ => {
+                // NES and Atari 2600 always need a cartridge
+                self.load_rom(system);
+            }
+        }
+    }
+
+    fn load_rom(&mut self, system: SystemChoice) {
+        let filter = match system {
+            SystemChoice::Nes => ("NES ROMs", &["nes", "NES"][..]),
+            SystemChoice::Apple2 => ("Apple II ROMs", &["rom", "ROM", "bin", "BIN", "dsk", "DSK"][..]),
+            SystemChoice::C64 => ("C64 Programs", &["prg", "PRG", "rom", "ROM", "bin", "BIN", "t64", "T64", "d64", "D64"][..]),
+            SystemChoice::Atari2600 => ("Atari 2600 ROMs", &["a26", "A26", "bin", "BIN", "rom", "ROM"][..]),
+        };
+
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Load ROM")
+            .add_filter(filter.0, filter.1);
+
+        if let Some(ref dir) = self.config.last_rom_dir {
+            dialog = dialog.set_directory(dir);
+        }
+
+        if let Some(path) = dialog.pick_file() {
+            if let Some(parent) = path.parent() {
+                self.config.last_rom_dir = Some(parent.to_string_lossy().into_owned());
+                self.config.save();
+            }
+
+            match std::fs::read(&path) {
+                Ok(data) => {
+                    let roms_dir = crate::system_roms::resolve_roms_dir(&self.config.system_roms_dir);
+
+                    let result: Result<Box<dyn SystemEmulator>, String> = match system {
+                        SystemChoice::Nes => {
+                            emu_nes::Nes::from_rom(&data).map(|n| Box::new(n) as Box<dyn SystemEmulator>)
+                        }
+                        SystemChoice::Apple2 => {
+                            let ext = path.extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
+
+                            if ext == "dsk" {
+                                // .dsk disk image: need system ROM + disk II ROM
+                                let sys_rom = crate::system_roms::load_apple2_rom(&roms_dir);
+                                let disk_rom = crate::system_roms::load_disk_ii_rom(&roms_dir);
+
+                                match (sys_rom, disk_rom) {
+                                    (Some(sr), Some(dr)) => {
+                                        emu_apple2::Apple2::with_disk(&sr, &dr, &data)
+                                            .map(|a| Box::new(a) as Box<dyn SystemEmulator>)
+                                    }
+                                    (None, _) => Err("Apple II system ROM not found. \
+                                        Place apple2plus.rom in roms/apple2/".into()),
+                                    (_, None) => Err("Disk II ROM not found. \
+                                        Place diskII.c600.c6ff.bin in roms/apple2/".into()),
+                                }
+                            } else {
+                                let rom_data = if data.len() >= 8192 {
+                                    data.clone()
+                                } else if let Some(sys_rom) = crate::system_roms::load_apple2_rom(&roms_dir) {
+                                    log::info!("Using system ROM from {}", roms_dir.display());
+                                    sys_rom
+                                } else {
+                                    data.clone()
+                                };
+                                emu_apple2::Apple2::from_rom(&rom_data)
+                                    .map(|a| Box::new(a) as Box<dyn SystemEmulator>)
+                            }
+                        }
+                        SystemChoice::C64 => {
+                            let (basic, kernal, chargen) = crate::system_roms::load_c64_roms(&roms_dir);
+                            let has_roms = basic.is_some() && kernal.is_some() && chargen.is_some();
+
+                            let ext = path.extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
+
+                            if ext == "d64" {
+                                // D64: boot with mounted disk image (needs system ROMs)
+                                if has_roms {
+                                    emu_c64::C64::from_d64(
+                                        basic.as_deref().unwrap(),
+                                        kernal.as_deref().unwrap(),
+                                        chargen.as_deref().unwrap(),
+                                        &data,
+                                    ).map(|c| Box::new(c) as Box<dyn SystemEmulator>)
+                                } else {
+                                    Err("C64 system ROMs required for D64 disk images. \
+                                         Place basic.rom, kernal.rom, chargen.rom in roms/c64/".into())
+                                }
+                            } else {
+                                // T64 or PRG: extract PRG data
+                                let prg_result = if ext == "t64" {
+                                    emu_c64::t64_loader::extract_first_prg(&data)
+                                } else {
+                                    Ok(data.clone())
+                                };
+
+                                match prg_result {
+                                    Ok(prg_data) => {
+                                        emu_c64::C64::from_rom(&prg_data).map(|mut c| {
+                                            if has_roms {
+                                                c.load_system_roms(
+                                                    basic.as_deref().unwrap(),
+                                                    kernal.as_deref().unwrap(),
+                                                    chargen.as_deref().unwrap(),
+                                                );
+                                            } else {
+                                                log::warn!(
+                                                    "C64 system ROMs not found in {}. \
+                                                     Place basic.rom, kernal.rom, chargen.rom in roms/c64/",
+                                                    roms_dir.display()
+                                                );
+                                            }
+                                            Box::new(c) as Box<dyn SystemEmulator>
+                                        })
+                                    }
+                                    Err(e) => Err(e),
+                                }
+                            }
+                        }
+                        SystemChoice::Atari2600 => {
+                            emu_atari2600::Atari2600::from_rom(&data).map(|a| Box::new(a) as Box<dyn SystemEmulator>)
+                        }
+                    };
+
+                    match result {
+                        Ok(sys) => {
+                            self.selected_system = Some(system);
+                            self.start_system(sys);
+                        }
+                        Err(e) => {
+                            self.error_msg = Some(format!("Failed to load ROM: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.error_msg = Some(format!("Failed to read file: {}", e));
+                }
+            }
+        }
+    }
+}
+
+impl eframe::App for EmuApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Process input
+        let input_events = input::process_egui_input(ctx);
+        if let Some(ref mut sys) = self.system {
+            for event in &input_events {
+                sys.handle_input(*event);
+            }
+        }
+
+        // Top menu
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            let action = menu::render_menu(ui, self.system.is_some());
+            match action {
+                MenuAction::LoadRom => {
+                    if let Some(system) = self.selected_system {
+                        self.load_rom(system);
+                    }
+                }
+                MenuAction::Reset => {
+                    if let Some(ref mut sys) = self.system {
+                        sys.reset();
+                    }
+                }
+                MenuAction::Break => {
+                    if let Some(ref mut sys) = self.system {
+                        use emu_common::{Button, InputEvent};
+                        sys.handle_input(InputEvent { button: Button::Key(0x03), pressed: true, port: 0 });
+                    }
+                }
+                MenuAction::Quit => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                MenuAction::BackToSystemSelect => {
+                    self.screen = Screen::SystemSelect;
+                    self.system = None;
+                    self.texture = None;
+                }
+                MenuAction::None => {}
+            }
+        });
+
+        // Error message
+        if let Some(ref msg) = self.error_msg.clone() {
+            egui::Window::new("Error").show(ctx, |ui| {
+                ui.label(msg);
+                if ui.button("OK").clicked() {
+                    self.error_msg = None;
+                }
+            });
+        }
+
+        // Main content
+        egui::CentralPanel::default().show(ctx, |ui| {
+            match self.screen {
+                Screen::SystemSelect => {
+                    if let Some(action) = crate::screens::system_select::render(ui) {
+                        match action {
+                            SystemAction::LoadRom(choice) => {
+                                self.selected_system = Some(choice);
+                                self.load_rom(choice);
+                            }
+                            SystemAction::BootSystem(choice) => {
+                                self.boot_system(choice);
+                            }
+                        }
+                    }
+                }
+                Screen::Emulation => {
+                    // Step emulation
+                    if let Some(ref mut sys) = self.system {
+                        sys.step_frame();
+
+                        // Drain audio
+                        let count = sys.audio_samples(&mut self.audio_buffer);
+                        if let Some(ref mut audio) = self.audio {
+                            audio.push_samples(&self.audio_buffer[..count], self.config.volume);
+                        }
+
+                        // Render framebuffer
+                        let fb = sys.framebuffer();
+                        crate::screens::emulation::render(ui, &mut self.texture, fb);
+                    }
+                }
+            }
+        });
+
+        // Request repaint at target FPS during emulation
+        if let Some(ref sys) = self.system {
+            let fps = sys.target_fps();
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / fps));
+        }
+    }
+}

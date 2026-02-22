@@ -1,0 +1,26 @@
+/target
+**/*.rs.bk
+*.swp
+*.swo
+.DS_Store
+
+# ROM files - user must provide their own
+*.nes
+*.NES
+*.rom
+*.ROM
+*.bin
+*.BIN
+*.prg
+*.PRG
+*.a26
+*.A26
+*.dsk
+*.DSK
+*.d64
+*.D64
+*.t64
+*.T64
+
+# Config
+config.ron

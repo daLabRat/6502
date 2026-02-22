@@ -1,0 +1,26 @@
+[package]
+name = "emu-frontend"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+gamepad = ["gilrs"]
+audio = ["cpal", "rtrb"]
+
+[dependencies]
+emu-common = { path = "../common" }
+emu-nes = { path = "../nes" }
+emu-apple2 = { path = "../apple2" }
+emu-c64 = { path = "../c64" }
+emu-atari2600 = { path = "../atari2600" }
+eframe = "0.30"
+egui = "0.30"
+rfd = "0.15"
+gilrs = { version = "0.11", optional = true }
+cpal = { version = "0.15", optional = true }
+rtrb = { version = "0.3", optional = true }
+serde = { workspace = true }
+ron = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }

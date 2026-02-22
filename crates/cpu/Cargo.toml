@@ -1,0 +1,12 @@
+[package]
+name = "emu-cpu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+emu-common = { path = "../common" }
+bitflags = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }

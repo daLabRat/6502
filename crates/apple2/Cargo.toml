@@ -1,0 +1,12 @@
+[package]
+name = "emu-apple2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+emu-common = { path = "../common" }
+emu-cpu = { path = "../cpu" }
+log = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }

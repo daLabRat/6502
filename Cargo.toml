@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/common",
+    "crates/cpu",
+    "crates/nes",
+    "crates/apple2",
+    "crates/c64",
+    "crates/atari2600",
+    "crates/frontend",
+]
+
+[workspace.dependencies]
+bitflags = "2.6"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1.0", features = ["derive"] }
+ron = "0.8"

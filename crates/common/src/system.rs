@@ -1,0 +1,43 @@
+use crate::framebuffer::FrameBuffer;
+use crate::input::InputEvent;
+use crate::audio::AudioSample;
+
+/// Trait that all system emulators implement. The frontend interacts
+/// with every system through this uniform interface.
+pub trait SystemEmulator {
+    /// Advance the emulation by one video frame (e.g., ~29780 CPU cycles for NTSC NES).
+    /// Returns the number of audio samples generated this frame.
+    fn step_frame(&mut self) -> usize;
+
+    /// Get a reference to the current framebuffer for display.
+    fn framebuffer(&self) -> &FrameBuffer;
+
+    /// Drain generated audio samples into the provided buffer.
+    /// Returns the number of samples written.
+    fn audio_samples(&mut self, out: &mut [AudioSample]) -> usize;
+
+    /// Send an input event to the system.
+    fn handle_input(&mut self, event: InputEvent);
+
+    /// Reset the system (power cycle).
+    fn reset(&mut self);
+
+    /// The native display width of this system.
+    fn display_width(&self) -> u32;
+
+    /// The native display height of this system.
+    fn display_height(&self) -> u32;
+
+    /// Target frames per second (e.g., 60 for NTSC, 50 for PAL).
+    fn target_fps(&self) -> f64 {
+        60.0
+    }
+
+    /// Set the audio output sample rate. Called by the frontend after
+    /// initializing the audio device so the emulator generates samples
+    /// at the correct rate (device may be 48000 Hz, not 44100).
+    fn set_sample_rate(&mut self, _rate: u32) {}
+
+    /// Name of this system for display in the UI.
+    fn system_name(&self) -> &str;
+}

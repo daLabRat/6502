@@ -1,0 +1,201 @@
+/// CIA (Complex Interface Adapter) chip.
+/// CIA1: Keyboard matrix scanning, joystick, timer A/B → IRQ.
+/// CIA2: VIC-II bank selection, serial bus, timer A/B → NMI.
+pub struct Cia {
+    /// Port A data register
+    pub pra: u8,
+    /// Port B data register
+    pub prb: u8,
+    /// Port A data direction
+    pub ddra: u8,
+    /// Port B data direction
+    pub ddrb: u8,
+
+    // Timer A
+    timer_a_latch: u16,
+    timer_a_counter: u16,
+    timer_a_running: bool,
+    timer_a_oneshot: bool,
+
+    // Timer B
+    timer_b_latch: u16,
+    timer_b_counter: u16,
+    timer_b_running: bool,
+    timer_b_oneshot: bool,
+
+    // Interrupt
+    pub icr_data: u8,   // Interrupt data register
+    pub icr_mask: u8,   // Interrupt mask register
+    pub irq_pending: bool,
+
+    /// Is this CIA1 (IRQ) or CIA2 (NMI)?
+    is_cia1: bool,
+
+    /// Keyboard matrix state (CIA1 only).
+    /// 8x8 matrix: rows selected by PRA output, columns read from PRB.
+    pub keyboard_matrix: [u8; 8],
+}
+
+impl Cia {
+    pub fn new(is_cia1: bool) -> Self {
+        Self {
+            pra: 0xFF,
+            prb: 0xFF,
+            ddra: 0,
+            ddrb: 0,
+            timer_a_latch: 0xFFFF,
+            timer_a_counter: 0xFFFF,
+            timer_a_running: false,
+            timer_a_oneshot: false,
+            timer_b_latch: 0xFFFF,
+            timer_b_counter: 0xFFFF,
+            timer_b_running: false,
+            timer_b_oneshot: false,
+            icr_data: 0,
+            icr_mask: 0,
+            irq_pending: false,
+            is_cia1,
+            keyboard_matrix: [0xFF; 8],
+        }
+    }
+
+    pub fn read_register(&mut self, addr: u16) -> u8 {
+        match addr & 0x0F {
+            0x00 => {
+                if self.is_cia1 {
+                    // Port A: output bits from DDRA, input bits high
+                    (self.pra & self.ddra) | (!self.ddra)
+                } else {
+                    (self.pra & self.ddra) | (!self.ddra)
+                }
+            }
+            0x01 => {
+                if self.is_cia1 {
+                    // Keyboard scanning: for each active row in PRA, OR the column data
+                    let mut result = 0xFF;
+                    let rows = !(self.pra | !self.ddra);
+                    for i in 0..8 {
+                        if rows & (1 << i) != 0 {
+                            result &= self.keyboard_matrix[i];
+                        }
+                    }
+                    result
+                } else {
+                    (self.prb & self.ddrb) | (!self.ddrb)
+                }
+            }
+            0x02 => self.ddra,
+            0x03 => self.ddrb,
+            0x04 => (self.timer_a_counter & 0xFF) as u8,
+            0x05 => (self.timer_a_counter >> 8) as u8,
+            0x06 => (self.timer_b_counter & 0xFF) as u8,
+            0x07 => (self.timer_b_counter >> 8) as u8,
+            0x0D => {
+                // ICR read - returns data and clears it
+                let val = self.icr_data;
+                self.icr_data = 0;
+                self.irq_pending = false;
+                val
+            }
+            _ => 0,
+        }
+    }
+
+    pub fn write_register(&mut self, addr: u16, val: u8) {
+        match addr & 0x0F {
+            0x00 => self.pra = val,
+            0x01 => self.prb = val,
+            0x02 => self.ddra = val,
+            0x03 => self.ddrb = val,
+            0x04 => self.timer_a_latch = (self.timer_a_latch & 0xFF00) | val as u16,
+            0x05 => {
+                self.timer_a_latch = (self.timer_a_latch & 0x00FF) | ((val as u16) << 8);
+                if !self.timer_a_running {
+                    self.timer_a_counter = self.timer_a_latch;
+                }
+            }
+            0x06 => self.timer_b_latch = (self.timer_b_latch & 0xFF00) | val as u16,
+            0x07 => {
+                self.timer_b_latch = (self.timer_b_latch & 0x00FF) | ((val as u16) << 8);
+                if !self.timer_b_running {
+                    self.timer_b_counter = self.timer_b_latch;
+                }
+            }
+            0x0D => {
+                // ICR mask write
+                if val & 0x80 != 0 {
+                    self.icr_mask |= val & 0x1F;
+                } else {
+                    self.icr_mask &= !(val & 0x1F);
+                }
+            }
+            0x0E => {
+                self.timer_a_running = val & 0x01 != 0;
+                self.timer_a_oneshot = val & 0x08 != 0;
+                if val & 0x10 != 0 {
+                    self.timer_a_counter = self.timer_a_latch;
+                }
+            }
+            0x0F => {
+                self.timer_b_running = val & 0x01 != 0;
+                self.timer_b_oneshot = val & 0x08 != 0;
+                if val & 0x10 != 0 {
+                    self.timer_b_counter = self.timer_b_latch;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Step one CPU cycle.
+    pub fn step(&mut self) {
+        // Timer A
+        if self.timer_a_running {
+            if self.timer_a_counter == 0 {
+                self.timer_a_counter = self.timer_a_latch;
+                self.icr_data |= 0x01;
+                if self.icr_mask & 0x01 != 0 {
+                    self.icr_data |= 0x80;
+                    self.irq_pending = true;
+                }
+                if self.timer_a_oneshot {
+                    self.timer_a_running = false;
+                }
+            } else {
+                self.timer_a_counter -= 1;
+            }
+        }
+
+        // Timer B
+        if self.timer_b_running {
+            if self.timer_b_counter == 0 {
+                self.timer_b_counter = self.timer_b_latch;
+                self.icr_data |= 0x02;
+                if self.icr_mask & 0x02 != 0 {
+                    self.icr_data |= 0x80;
+                    self.irq_pending = true;
+                }
+                if self.timer_b_oneshot {
+                    self.timer_b_running = false;
+                }
+            } else {
+                self.timer_b_counter -= 1;
+            }
+        }
+    }
+
+    /// Set a key in the keyboard matrix (CIA1 only).
+    /// row/col are the matrix position (0-7 each).
+    pub fn key_down(&mut self, row: u8, col: u8) {
+        if row < 8 && col < 8 {
+            self.keyboard_matrix[row as usize] &= !(1 << col);
+        }
+    }
+
+    /// Release a key in the keyboard matrix.
+    pub fn key_up(&mut self, row: u8, col: u8) {
+        if row < 8 && col < 8 {
+            self.keyboard_matrix[row as usize] |= 1 << col;
+        }
+    }
+}
