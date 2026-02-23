@@ -2,10 +2,13 @@ use egui::{ColorImage, TextureHandle, TextureOptions};
 use emu_common::FrameBuffer;
 
 /// Render the emulation screen: display the framebuffer as a texture.
+/// `aspect_ratio` is the correct display aspect ratio (width/height),
+/// which may differ from the framebuffer pixel ratio (e.g. 4:3 for CRT systems).
 pub fn render(
     ui: &mut egui::Ui,
     texture: &mut Option<TextureHandle>,
     framebuffer: &FrameBuffer,
+    aspect_ratio: f32,
 ) {
     let image = ColorImage::from_rgba_unmultiplied(
         [framebuffer.width as usize, framebuffer.height as usize],
@@ -21,7 +24,7 @@ pub fn render(
 
     if let Some(tex) = texture {
         let available = ui.available_size();
-        let aspect = framebuffer.width as f32 / framebuffer.height as f32;
+        let aspect = aspect_ratio;
 
         let (w, h) = if available.x / available.y > aspect {
             (available.y * aspect, available.y)

@@ -16,6 +16,8 @@ impl Keyboard {
 
     /// Press a key (ASCII value).
     pub fn key_press(&mut self, key: u8) {
+        log::info!("Keyboard: key_press ${:02X} ('{}')", key,
+            if key >= 0x20 && key < 0x7F { key as char } else { '.' });
         self.latch = key | 0x80; // Set high bit (strobe)
         self.strobe = true;
     }

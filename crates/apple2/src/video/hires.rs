@@ -34,7 +34,7 @@ pub fn render_hires(
         let addr = hires_line_addr(line as usize, switches.page2);
 
         for col in 0..40u16 {
-            let byte = memory.ram[(addr + col) as usize];
+            let byte = memory.read_main_hires(addr + col);
             let color_group = if byte & 0x80 != 0 { 1 } else { 0 };
 
             for bit in 0..7 {

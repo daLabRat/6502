@@ -21,6 +21,8 @@ pub struct Cpu6502<B: Bus> {
     pub bus: B,
     /// Whether BCD mode is functional (false for NES, true for others)
     pub bcd_enabled: bool,
+    /// 65C02 (CMOS) mode: clears D flag on interrupts/BRK
+    pub cmos_mode: bool,
     /// Total cycles executed (wraps)
     pub total_cycles: u64,
     /// CPU is halted (hit JAM instruction)
@@ -39,12 +41,14 @@ impl<B: Bus> Cpu6502<B> {
             p: StatusFlags::default(),
             bus,
             bcd_enabled: true,
+            cmos_mode: false,
             total_cycles: 0,
             jammed: false,
         }
     }
 
     /// Reset the CPU: read the reset vector and initialize registers.
+    /// On 65C02 (bcd_enabled=true for Apple IIe), the D flag is cleared on reset.
     pub fn reset(&mut self) {
         let lo = self.bus.read(0xFFFC) as u16;
         let hi = self.bus.read(0xFFFD) as u16;
@@ -53,6 +57,8 @@ impl<B: Bus> Cpu6502<B> {
         self.a = 0;
         self.x = 0;
         self.y = 0;
+        // 65C02 clears D on reset; NMOS 6502 leaves it undefined.
+        // We clear it unconditionally since NMOS programs should CLD anyway.
         self.p = StatusFlags::IRQ_DISABLE | StatusFlags::UNUSED;
         self.jammed = false;
     }
@@ -93,6 +99,10 @@ impl<B: Bus> Cpu6502<B> {
         self.push(self.pc as u8);
         self.push(self.p.to_stack(false));
         self.p.insert(StatusFlags::IRQ_DISABLE);
+        // 65C02: clear D flag on interrupt
+        if self.cmos_mode {
+            self.p.remove(StatusFlags::DECIMAL);
+        }
         let lo = self.bus.read(0xFFFA) as u16;
         let hi = self.bus.read(0xFFFB) as u16;
         self.pc = (hi << 8) | lo;
@@ -105,6 +115,10 @@ impl<B: Bus> Cpu6502<B> {
             self.push(self.pc as u8);
             self.push(self.p.to_stack(false));
             self.p.insert(StatusFlags::IRQ_DISABLE);
+            // 65C02: clear D flag on interrupt
+            if self.cmos_mode {
+                self.p.remove(StatusFlags::DECIMAL);
+            }
             let lo = self.bus.read(0xFFFE) as u16;
             let hi = self.bus.read(0xFFFF) as u16;
             self.pc = (hi << 8) | lo;

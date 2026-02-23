@@ -4,6 +4,10 @@ use emu_common::AudioSample;
 /// Accessing $C030 toggles the speaker state.
 pub struct Speaker {
     state: bool,
+    /// True after a toggle, cleared after a silence timeout.
+    active: bool,
+    /// Cycles since the last toggle (for silence detection).
+    cycles_since_toggle: u64,
     sample_buffer: Vec<AudioSample>,
     cycle_count: u64,
     cycles_per_sample: f64,
@@ -16,6 +20,8 @@ impl Speaker {
         let sample_rate = emu_common::SAMPLE_RATE as f64;
         Self {
             state: false,
+            active: false,
+            cycles_since_toggle: 0,
             sample_buffer: Vec::with_capacity(1024),
             cycle_count: 0,
             cycles_per_sample: cpu_freq / sample_rate,
@@ -32,16 +38,28 @@ impl Speaker {
     /// Toggle the speaker (called on $C030 access).
     pub fn toggle(&mut self) {
         self.state = !self.state;
+        self.active = true;
+        self.cycles_since_toggle = 0;
     }
 
     /// Step the speaker by one CPU cycle.
     pub fn step(&mut self) {
         self.cycle_count += 1;
+        self.cycles_since_toggle += 1;
         self.sample_accumulator += 1.0;
+
+        // Go silent if no toggle for ~50ms (~51150 cycles at 1.023 MHz)
+        if self.cycles_since_toggle > 51_150 {
+            self.active = false;
+        }
 
         if self.sample_accumulator >= self.cycles_per_sample {
             self.sample_accumulator -= self.cycles_per_sample;
-            let sample = if self.state { 0.5 } else { -0.5 };
+            let sample = if self.active {
+                if self.state { 0.5 } else { -0.5 }
+            } else {
+                0.0
+            };
             self.sample_buffer.push(sample);
         }
     }

@@ -52,17 +52,15 @@ pub fn process_egui_input(ctx: &egui::Context) -> Vec<InputEvent> {
                     }
                 }
                 // Text events capture shifted/special characters (", !, @, etc.)
+                // Only send press — release is handled by the emulator via delayed
+                // key-up, since Text events deliver press+release in the same frame
+                // and keyboard matrix scanners (C64 CIA) would never see the key.
                 egui::Event::Text(text) => {
                     for ch in text.chars() {
                         if let Some(ascii) = char_to_apple_ascii(ch) {
                             events.push(InputEvent {
                                 button: Button::Key(ascii),
                                 pressed: true,
-                                port: 0,
-                            });
-                            events.push(InputEvent {
-                                button: Button::Key(ascii),
-                                pressed: false,
                                 port: 0,
                             });
                         }
@@ -151,6 +149,11 @@ fn key_to_ascii(key: Key) -> Option<u8> {
         Key::Enter => Some(0x0D),
         Key::Escape => Some(0x1B),
         Key::Backspace => Some(0x08),
+        // Apple IIe arrow key codes
+        Key::ArrowLeft => Some(0x08),   // same as backspace
+        Key::ArrowRight => Some(0x15),  // Ctrl+U / NAK
+        Key::ArrowUp => Some(0x0B),     // Ctrl+K / VT
+        Key::ArrowDown => Some(0x0A),   // Ctrl+J / LF
         _ => None,
     }
 }

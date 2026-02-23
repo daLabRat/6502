@@ -34,7 +34,7 @@ impl Mapper for Cnrom {
         }
     }
 
-    fn ppu_read(&self, addr: u16) -> u8 {
+    fn ppu_read(&mut self, addr: u16) -> u8 {
         if addr < 0x2000 {
             let offset = self.chr_bank * 8192 + addr as usize;
             self.chr.get(offset).copied().unwrap_or(0)

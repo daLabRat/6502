@@ -135,7 +135,7 @@ impl Mapper for Mmc3 {
         }
     }
 
-    fn ppu_read(&self, addr: u16) -> u8 {
+    fn ppu_read(&mut self, addr: u16) -> u8 {
         if addr >= 0x2000 { return 0; }
         let chr_mode = (self.bank_select >> 7) & 1;
 

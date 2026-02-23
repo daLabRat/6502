@@ -38,7 +38,7 @@ impl Mapper for UxRom {
         }
     }
 
-    fn ppu_read(&self, addr: u16) -> u8 {
+    fn ppu_read(&mut self, addr: u16) -> u8 {
         self.chr.get(addr as usize).copied().unwrap_or(0)
     }
 

@@ -177,6 +177,26 @@ static LORES_COLORS: [u32; 16] = [
 /// Display width for bounds checking.
 const WIDTH: u32 = 560;
 
+/// Decode a screen byte into (is_inverse, char_code).
+///
+/// Apple II screen byte encoding:
+///   $00-$3F: Inverse display
+///   $40-$7F: Flash (standard charset) or normal alternate chars (ALTCHARSET)
+///   $80-$FF: Normal display
+///
+/// Returns the 7-bit character code (preserving bit 6 for IIe lowercase).
+fn decode_char(ch: u8, flash_on: bool, altcharset: bool) -> (bool, u8) {
+    let is_inverse = if altcharset {
+        // With ALTCHARSET: $00-$3F = inverse, $40-$FF = normal
+        ch < 0x40
+    } else {
+        // Standard: $00-$3F = inverse, $40-$7F = flash, $80-$FF = normal
+        ch < 0x40 || (ch < 0x80 && flash_on)
+    };
+    let char_code = ch & 0x7F;
+    (is_inverse, char_code)
+}
+
 /// Render 40x24 text mode (or 80x24 if col80 enabled).
 pub fn render_text(fb: &mut FrameBuffer, memory: &Memory, switches: &SoftSwitches, flash_on: bool) {
     render_text_lines(fb, memory, switches, 0, 24, flash_on);
@@ -212,15 +232,14 @@ fn render_text_lines_40col(
     for line in start_line..end_line {
         let addr = text_line_addr(line, switches.page2);
         for col in 0..40 {
-            let ch = memory.ram[(addr + col) as usize];
-            let is_inverse = ch < 0x40 || (ch < 0x80 && flash_on);
-            let char_code = ch & 0x3F;
+            let ch = memory.read_main_text(addr + col as u16);
+            let (is_inverse, char_code) = decode_char(ch, flash_on, switches.altcharset);
 
             for row in 0..8 {
                 let y = line as u32 * 8 + row as u32;
                 if y >= 192 { continue; }
 
-                let pattern = get_char_pattern(char_code, row);
+                let pattern = get_char_pattern(char_code, row, switches.is_iie);
 
                 for bit in 0..7 {
                     let x = col as u32 * 14 + bit * 2;
@@ -251,7 +270,10 @@ fn render_text_lines_80col(
     flash_on: bool,
 ) {
     for line in start_line..end_line {
-        let addr = text_line_addr(line, switches.page2);
+        // In 80-col mode with 80STORE, always display page 1 ($0400).
+        // PAGE2 controls main/aux bank for writes, not which page to display.
+        let use_page2 = if switches.store80 { false } else { switches.page2 };
+        let addr = text_line_addr(line, use_page2);
         for screen_col in 0..80u16 {
             // 80-col interleaving: even cols from aux, odd cols from main
             let mem_col = screen_col / 2;
@@ -261,14 +283,13 @@ fn render_text_lines_80col(
                 memory.read_main_text(addr + mem_col)
             };
 
-            let is_inverse = ch < 0x40 || (ch < 0x80 && flash_on);
-            let char_code = ch & 0x3F;
+            let (is_inverse, char_code) = decode_char(ch, flash_on, switches.altcharset);
 
             for row in 0..8 {
                 let y = line as u32 * 8 + row as u32;
                 if y >= 192 { continue; }
 
-                let pattern = get_char_pattern(char_code, row);
+                let pattern = get_char_pattern(char_code, row, switches.is_iie);
 
                 for bit in 0..7 {
                     let x = screen_col as u32 * 7 + bit;
@@ -291,7 +312,7 @@ pub fn render_lores(fb: &mut FrameBuffer, memory: &Memory, switches: &SoftSwitch
     for line in 0..max_lines {
         let addr = text_line_addr(line, switches.page2);
         for col in 0..40 {
-            let byte = memory.ram[(addr + col) as usize];
+            let byte = memory.read_main_text(addr + col as u16);
             let top_color = LORES_COLORS[(byte & 0x0F) as usize];
             let bottom_color = LORES_COLORS[((byte >> 4) & 0x0F) as usize];
 
@@ -324,15 +345,102 @@ pub fn render_lores(fb: &mut FrameBuffer, memory: &Memory, switches: &SoftSwitch
     }
 }
 
+/// Apple IIe alternate character set: lowercase letters and additional symbols.
+/// Covers screen codes $60-$7F (lowercase a-z and symbols).
+/// Same 5x7 pixel format as CHAR_ROM.
+static CHAR_ROM_LOWER: [[u8; 8]; 32] = [
+    // 0x60 '`'
+    [0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+    // 0x61 'a'
+    [0x00, 0x00, 0x1C, 0x20, 0x3C, 0x22, 0x3C, 0x00],
+    // 0x62 'b'
+    [0x02, 0x02, 0x1E, 0x22, 0x22, 0x22, 0x1E, 0x00],
+    // 0x63 'c'
+    [0x00, 0x00, 0x1C, 0x02, 0x02, 0x02, 0x1C, 0x00],
+    // 0x64 'd'
+    [0x20, 0x20, 0x3C, 0x22, 0x22, 0x22, 0x3C, 0x00],
+    // 0x65 'e'
+    [0x00, 0x00, 0x1C, 0x22, 0x3E, 0x02, 0x1C, 0x00],
+    // 0x66 'f'
+    [0x18, 0x24, 0x04, 0x0E, 0x04, 0x04, 0x04, 0x00],
+    // 0x67 'g'
+    [0x00, 0x00, 0x3C, 0x22, 0x22, 0x3C, 0x20, 0x1C],
+    // 0x68 'h'
+    [0x02, 0x02, 0x1E, 0x22, 0x22, 0x22, 0x22, 0x00],
+    // 0x69 'i'
+    [0x08, 0x00, 0x0C, 0x08, 0x08, 0x08, 0x1C, 0x00],
+    // 0x6A 'j'
+    [0x10, 0x00, 0x18, 0x10, 0x10, 0x12, 0x0C, 0x00],
+    // 0x6B 'k'
+    [0x02, 0x02, 0x22, 0x12, 0x0E, 0x12, 0x22, 0x00],
+    // 0x6C 'l'
+    [0x0C, 0x08, 0x08, 0x08, 0x08, 0x08, 0x1C, 0x00],
+    // 0x6D 'm'
+    [0x00, 0x00, 0x16, 0x2A, 0x2A, 0x2A, 0x22, 0x00],
+    // 0x6E 'n'
+    [0x00, 0x00, 0x1E, 0x22, 0x22, 0x22, 0x22, 0x00],
+    // 0x6F 'o'
+    [0x00, 0x00, 0x1C, 0x22, 0x22, 0x22, 0x1C, 0x00],
+    // 0x70 'p'
+    [0x00, 0x00, 0x1E, 0x22, 0x22, 0x1E, 0x02, 0x02],
+    // 0x71 'q'
+    [0x00, 0x00, 0x3C, 0x22, 0x22, 0x3C, 0x20, 0x20],
+    // 0x72 'r'
+    [0x00, 0x00, 0x1E, 0x22, 0x02, 0x02, 0x02, 0x00],
+    // 0x73 's'
+    [0x00, 0x00, 0x3C, 0x02, 0x1C, 0x20, 0x1E, 0x00],
+    // 0x74 't'
+    [0x04, 0x04, 0x1E, 0x04, 0x04, 0x24, 0x18, 0x00],
+    // 0x75 'u'
+    [0x00, 0x00, 0x22, 0x22, 0x22, 0x22, 0x3C, 0x00],
+    // 0x76 'v'
+    [0x00, 0x00, 0x22, 0x22, 0x22, 0x14, 0x08, 0x00],
+    // 0x77 'w'
+    [0x00, 0x00, 0x22, 0x2A, 0x2A, 0x2A, 0x14, 0x00],
+    // 0x78 'x'
+    [0x00, 0x00, 0x22, 0x14, 0x08, 0x14, 0x22, 0x00],
+    // 0x79 'y'
+    [0x00, 0x00, 0x22, 0x22, 0x22, 0x3C, 0x20, 0x1C],
+    // 0x7A 'z'
+    [0x00, 0x00, 0x3E, 0x10, 0x08, 0x04, 0x3E, 0x00],
+    // 0x7B '{'
+    [0x10, 0x08, 0x08, 0x04, 0x08, 0x08, 0x10, 0x00],
+    // 0x7C '|'
+    [0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x00],
+    // 0x7D '}'
+    [0x04, 0x08, 0x08, 0x10, 0x08, 0x08, 0x04, 0x00],
+    // 0x7E '~'
+    [0x24, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+    // 0x7F DEL (shown as checkered block on IIe)
+    [0x2A, 0x14, 0x2A, 0x14, 0x2A, 0x14, 0x2A, 0x00],
+];
+
 /// Get character pattern for a given character code and row.
-/// CHAR_ROM is in ASCII order (space at index 0, '@' at index 32).
-/// Apple II screen codes have '@' at 0 and space at 0x20.
-/// XOR with 0x20 converts between the two orderings.
-fn get_char_pattern(ch: u8, row: usize) -> u8 {
-    let idx = ((ch ^ 0x20) & 0x3F) as usize;
-    if idx < 64 && row < 8 {
-        CHAR_ROM[idx][row]
+///
+/// The `ch` parameter is the 7-bit character code (screen byte & 0x7F).
+///
+/// On the Apple IIe, the character ROM always has lowercase at positions $60-$7F.
+/// The ALTCHARSET switch only changes the $40-$5F range (MouseText on Enhanced IIe).
+///
+/// On the Apple II+, only 64 characters exist; codes $40-$7F mirror $00-$3F.
+fn get_char_pattern(ch: u8, row: usize, is_iie: bool) -> u8 {
+    let code = ch & 0x7F;
+    if is_iie && code >= 0x60 {
+        // IIe: lowercase characters at $60-$7F (always available)
+        let idx = (code - 0x60) as usize;
+        if idx < 32 && row < 8 {
+            CHAR_ROM_LOWER[idx][row]
+        } else {
+            0x00
+        }
     } else {
-        0x00
+        // Standard 64-character set (uppercase only)
+        // XOR 0x20 converts Apple II order (@=0) to ASCII order (space=0)
+        let idx = ((ch ^ 0x20) & 0x3F) as usize;
+        if idx < 64 && row < 8 {
+            CHAR_ROM[idx][row]
+        } else {
+            0x00
+        }
     }
 }

@@ -2,7 +2,7 @@
 ///
 /// Emulates the Disk II interface card in slot 6.
 /// I/O at $C0E0-$C0EF, boot ROM at $C600-$C6FF.
-/// Supports reading .dsk (DOS-order 16-sector) disk images.
+/// Supports reading .dsk (DOS-order) and .po (ProDOS-order) disk images.
 
 /// Number of bytes in a nibblized track.
 const TRACK_NIBBLE_SIZE: usize = 6656;
@@ -10,9 +10,17 @@ const TRACK_NIBBLE_SIZE: usize = 6656;
 /// Number of tracks on a standard 5.25" disk.
 const NUM_TRACKS: usize = 35;
 
-/// DOS 3.3 sector interleave table (logical → physical).
-static DOS33_INTERLEAVE: [usize; 16] = [
-    0, 13, 11, 9, 7, 5, 3, 1, 14, 12, 10, 8, 6, 4, 2, 15,
+/// DOS 3.3 sector interleave: physical sector → logical sector in .dsk file.
+/// Derived by inverting the logical→physical table [0,13,11,9,7,5,3,1,14,12,10,8,6,4,2,15].
+static DOS33_PHYSICAL_TO_LOGICAL: [usize; 16] = [
+    0, 7, 14, 6, 13, 5, 12, 4, 11, 3, 10, 2, 9, 1, 8, 15,
+];
+
+/// ProDOS sector interleave: physical sector → logical sector in .po file.
+/// ProDOS logical→physical: [0,2,4,6,8,10,12,14,1,3,5,7,9,11,13,15].
+/// Inverted: physical P → ProDOS logical sector.
+static PRODOS_PHYSICAL_TO_LOGICAL: [usize; 16] = [
+    0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15,
 ];
 
 /// 6-and-2 write translate table: maps 6-bit values to valid disk nibbles.
@@ -32,11 +40,11 @@ pub struct DiskII {
     /// Pre-nibblized track data (35 tracks).
     nibble_data: Vec<[u8; TRACK_NIBBLE_SIZE]>,
     /// Current track (0-34).
-    current_track: u8,
+    pub(crate) current_track: u8,
     /// Current byte position within the track's nibble stream.
     byte_position: usize,
     /// Motor on/off.
-    motor_on: bool,
+    pub(crate) motor_on: bool,
     /// Phase magnet states (4 phases for head stepping).
     phase_states: [bool; 4],
     /// Phase position (0-68 half-tracks, current_track = phase_position / 2).
@@ -44,7 +52,7 @@ pub struct DiskII {
     /// Data latch (last byte read).
     data_latch: u8,
     /// Write mode flag.
-    write_mode: bool,
+    pub(crate) write_mode: bool,
     /// Whether a disk is loaded.
     disk_loaded: bool,
     /// Boot ROM (256 bytes, P5 PROM at $C600-$C6FF).
@@ -76,7 +84,8 @@ impl DiskII {
         self.boot_rom[..len].copy_from_slice(&data[..len]);
     }
 
-    /// Load a .dsk image (143360 bytes = 35 tracks × 16 sectors × 256 bytes).
+    /// Load a .dsk/.po image (143360 bytes = 35 tracks × 16 sectors × 256 bytes).
+    /// Auto-detects DOS 3.3 vs ProDOS sector ordering.
     pub fn load_dsk(&mut self, data: &[u8]) -> Result<(), String> {
         if data.len() != 143360 {
             return Err(format!(
@@ -85,17 +94,29 @@ impl DiskII {
             ));
         }
 
+        let interleave = detect_sector_order(data);
+        let interleave_name = match interleave {
+            SectorOrder::Dos33 => "DOS 3.3",
+            SectorOrder::ProDos => "ProDOS",
+        };
+        let table = match interleave {
+            SectorOrder::Dos33 => &DOS33_PHYSICAL_TO_LOGICAL,
+            SectorOrder::ProDos => &PRODOS_PHYSICAL_TO_LOGICAL,
+        };
+
         self.nibble_data.clear();
         for track in 0..NUM_TRACKS {
             let track_data = &data[track * 4096..(track + 1) * 4096];
-            self.nibble_data.push(nibblize_track(track as u8, track_data));
+            self.nibble_data.push(nibblize_track_with_interleave(
+                track as u8, track_data, table,
+            ));
         }
 
         self.disk_loaded = true;
         self.current_track = 0;
         self.byte_position = 0;
         self.phase_position = 0;
-        log::info!("Disk II: loaded .dsk image ({} tracks)", NUM_TRACKS);
+        log::info!("Disk II: loaded {} order image ({} tracks)", interleave_name, NUM_TRACKS);
         Ok(())
     }
 
@@ -116,11 +137,11 @@ impl DiskII {
             0x9 => { self.motor_on = true; 0 }
             0xA | 0xB => 0, // Drive select (only drive 1 supported)
             0xC => {
-                // Q6L: Read data latch
-                if !self.write_mode {
-                    self.advance_byte();
-                }
-                self.data_latch
+                // Q6L: Read data latch, then clear bit 7 to signal "consumed".
+                // The next byte arriving from step() will restore bit 7.
+                let val = self.data_latch;
+                self.data_latch &= 0x7F;
+                val
             }
             0xD => {
                 // Q6H: Write load (not implemented for read-only)
@@ -158,74 +179,454 @@ impl DiskII {
     }
 
     /// Step the disk controller: advance the byte position based on CPU cycles.
-    /// ~32 CPU cycles per nibble byte at 1.023 MHz (gives ~300 RPM).
+    /// Loads new nibble bytes into the data latch as they arrive.
+    ///
+    /// The real Disk II produces a byte every ~32 CPU cycles (4 microseconds
+    /// at 1.023 MHz). The RWTS polling loop (LDA $C0EC / BPL) takes ~7 cycles
+    /// per poll, so the CPU polls 4-5 times per byte.
     pub fn step(&mut self, cycles: u8) {
         if !self.motor_on || !self.disk_loaded {
             return;
         }
 
         self.cycle_accumulator += cycles as u32;
-        // Each nibble byte takes ~32 CPU cycles
         while self.cycle_accumulator >= 32 {
             self.cycle_accumulator -= 32;
-            // Track rotation continues even when not reading
             self.byte_position = (self.byte_position + 1) % TRACK_NIBBLE_SIZE;
+
+            // Load the new byte into the data latch (bit 7 set = valid nibble ready)
+            if !self.write_mode {
+                if let Some(track) = self.nibble_data.get(self.current_track as usize) {
+                    self.data_latch = track[self.byte_position];
+                }
+            }
         }
     }
 
     /// Handle phase magnet activation/deactivation for head stepping.
+    ///
+    /// The Disk II stepper motor has 4 phases (0-3) in a 4-half-track cycle:
+    ///   Phase 0 → half-tracks 0, 4, 8, 12, ...
+    ///   Phase 1 → half-tracks 1, 5, 9, 13, ...
+    ///   Phase 2 → half-tracks 2, 6, 10, 14, ...
+    ///   Phase 3 → half-tracks 3, 7, 11, 15, ...
+    ///
+    /// Each adjacent phase is 1 half-track apart. The RWTS seek code steps
+    /// through phases sequentially (0→1→2→3→0 outward, 0→3→2→1→0 inward),
+    /// moving 1 half-track per step. Two full-track seeks = 4 phase steps.
     fn handle_phase(&mut self, switch: u8) {
         let phase = (switch >> 1) as usize;
         let on = switch & 1 != 0;
         self.phase_states[phase] = on;
 
-        if !on {
+        // Determine target half-track based on all active phase magnets
+        let mut active_phases = [0usize; 4];
+        let mut active_count = 0;
+        for p in 0..4 {
+            if self.phase_states[p] {
+                active_phases[active_count] = p;
+                active_count += 1;
+            }
+        }
+
+        if active_count == 0 || active_count > 2 {
             return;
         }
 
-        // Determine which direction to step based on the phase that's activated
-        // relative to the current phase position
-        let current_phase = (self.phase_position / 2) as usize % 4;
+        let cur = self.phase_position as i32;
 
-        // Check if activated phase is adjacent (next or previous)
-        let next_phase = (current_phase + 1) % 4;
-        let prev_phase = (current_phase + 3) % 4;
+        // Find the nearest half-track position matching the active phase(s)
+        // In a 4-ht cycle, phase P is at half-tracks P, P+4, P+8, ...
+        let target = if active_count == 1 {
+            let p = active_phases[0] as i32;
+            // Find nearest ht where ht % 4 == p
+            let cur_mod = ((cur % 4) + 4) % 4;
+            let diff = ((p - cur_mod) + 4) % 4;
+            // diff is 0,1,2,3 — pick shortest path (0,1,2 forward; 3 = -1 backward)
+            if diff <= 2 { cur + diff } else { cur + diff - 4 }
+        } else {
+            // Two phases active — find midpoint
+            let p0 = active_phases[0] as i32;
+            let p1 = active_phases[1] as i32;
+            let phase_diff = ((p1 - p0) + 4) % 4;
+            if phase_diff == 2 {
+                return; // Opposite phases — unstable, no movement
+            }
+            // Adjacent phases: midpoint is at a half-half-track position.
+            // In practice the head moves toward the closer of the two phases.
+            // Find nearest position for each phase and pick the closer one.
+            let t0 = {
+                let cur_mod = ((cur % 4) + 4) % 4;
+                let diff = ((p0 - cur_mod) + 4) % 4;
+                if diff <= 2 { cur + diff } else { cur + diff - 4 }
+            };
+            let t1 = {
+                let cur_mod = ((cur % 4) + 4) % 4;
+                let diff = ((p1 - cur_mod) + 4) % 4;
+                if diff <= 2 { cur + diff } else { cur + diff - 4 }
+            };
+            // Move toward the closer target
+            if (t0 - cur).unsigned_abs() <= (t1 - cur).unsigned_abs() { t0 } else { t1 }
+        };
 
-        if phase == next_phase && self.phase_position < 68 {
-            self.phase_position += 1;
-        } else if phase == prev_phase && self.phase_position > 0 {
-            self.phase_position -= 1;
+        let delta = target - cur;
+
+        // Limit movement to ±1 half-track per phase event
+        let movement = delta.clamp(-1, 1);
+        if movement == 0 {
+            return;
         }
+
+        let new_pos = (cur + movement).clamp(0, 68) as u8;
+        self.phase_position = new_pos;
 
         let new_track = self.phase_position / 2;
         if new_track != self.current_track {
+            if new_track > 1 || self.current_track > 1 {
+                log::info!("Disk II: seek track {} → {} (ht {})",
+                    self.current_track, new_track, self.phase_position);
+            }
             self.current_track = new_track;
-            self.byte_position = 0; // Reset position on track change
+            self.byte_position = 0;
         }
     }
 
-    /// Read the next nibble byte from the current track.
-    fn advance_byte(&mut self) {
-        if !self.disk_loaded || (self.current_track as usize) >= self.nibble_data.len() {
-            self.data_latch = 0xFF;
-            return;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_read_table() -> [u8; 256] {
+        let mut table = [0xFF_u8; 256];
+        for (i, &w) in WRITE_TABLE.iter().enumerate() {
+            table[w as usize] = i as u8;
+        }
+        table
+    }
+
+    /// Decode 343 nibble bytes back to 256 data bytes (reverse of encode_6and2).
+    fn decode_6and2(nibble_bytes: &[u8]) -> [u8; 256] {
+        let read_table = build_read_table();
+
+        // Translate nibble bytes to 6-bit values
+        let mut raw = [0u8; 343];
+        for i in 0..343 {
+            let val = read_table[nibble_bytes[i] as usize];
+            assert_ne!(val, 0xFF, "Invalid nibble byte ${:02X} at pos {}", nibble_bytes[i], i);
+            raw[i] = val;
         }
 
-        self.data_latch = self.nibble_data[self.current_track as usize][self.byte_position];
-        self.byte_position = (self.byte_position + 1) % TRACK_NIBBLE_SIZE;
+        // XOR unchain: first 86 values are aux (written in order 85,84,...,0)
+        let mut prev = 0u8;
+        let mut aux = [0u8; 86];
+        for i in 0..86 {
+            aux[85 - i] = raw[i] ^ prev;
+            prev = aux[85 - i];
+        }
+
+        let mut primary = [0u8; 256];
+        for i in 0..256 {
+            primary[i] = raw[86 + i] ^ prev;
+            prev = primary[i];
+        }
+
+        // Checksum should be 0
+        let checksum = raw[342] ^ prev;
+        assert_eq!(checksum, 0, "Checksum mismatch");
+
+        // Recombine: reverse the bit swap on aux low-2 bits
+        let mut data = [0u8; 256];
+        for i in 0..256 {
+            let aux_idx = 85 - (i % 86);
+            let shift = (i / 86) * 2;
+            let low2_swapped = (aux[aux_idx] >> shift) & 3;
+            // Reverse bit 0 ↔ bit 1 (undo the encoding swap)
+            let low2 = ((low2_swapped & 1) << 1) | ((low2_swapped >> 1) & 1);
+            data[i] = (primary[i] << 2) | low2;
+        }
+
+        data
+    }
+
+    /// Find the Nth data field prologue (D5 AA AD) in the nibble stream.
+    fn find_data_prologue(nibbles: &[u8], n: usize) -> usize {
+        let mut count = 0;
+        let mut pos = 0;
+        while pos + 2 < nibbles.len() {
+            if nibbles[pos] == 0xD5 && nibbles[pos + 1] == 0xAA && nibbles[pos + 2] == 0xAD {
+                if count == n {
+                    return pos + 3;
+                }
+                count += 1;
+            }
+            pos += 1;
+        }
+        panic!("Data prologue #{} not found", n);
+    }
+
+    #[test]
+    fn test_6and2_round_trip_sequential() {
+        let mut sector_data = [0u8; 256];
+        for i in 0..256 { sector_data[i] = i as u8; }
+
+        let mut track_data = [0u8; 4096];
+        track_data[..256].copy_from_slice(&sector_data);
+
+        let nibbles = nibblize_track(0, &track_data);
+
+        // Physical sector 0 data starts after the first D5 AA AD
+        let data_start = find_data_prologue(&nibbles, 0);
+        let decoded = decode_6and2(&nibbles[data_start..data_start + 343]);
+
+        assert_eq!(&decoded[..], &sector_data[..], "6-and-2 round trip failed for sequential pattern");
+    }
+
+    #[test]
+    fn test_6and2_round_trip_all_ff() {
+        let sector_data = [0xFF_u8; 256];
+
+        let track_data = {
+            let mut t = [0u8; 4096];
+            t[..256].copy_from_slice(&sector_data);
+            t
+        };
+
+        let nibbles = nibblize_track(0, &track_data);
+
+        let data_start = find_data_prologue(&nibbles, 0);
+        let decoded = decode_6and2(&nibbles[data_start..data_start + 343]);
+
+        assert_eq!(&decoded[..], &sector_data[..], "6-and-2 round trip failed for 0xFF pattern");
+    }
+
+    #[test]
+    fn test_6and2_round_trip_all_zeros() {
+        let sector_data = [0x00_u8; 256];
+
+        let track_data = [0u8; 4096];
+
+        let nibbles = nibblize_track(0, &track_data);
+
+        let data_start = find_data_prologue(&nibbles, 0);
+        let decoded = decode_6and2(&nibbles[data_start..data_start + 343]);
+
+        assert_eq!(&decoded[..], &sector_data[..], "6-and-2 round trip failed for zero pattern");
+    }
+
+    #[test]
+    fn test_4and4_round_trip() {
+        // Verify 4-and-4 encoding for address field values
+        for val in 0..=255u8 {
+            let mut nibbles = [0u8; TRACK_NIBBLE_SIZE];
+            let mut pos = 0;
+            encode_4and4(&mut nibbles, &mut pos, val);
+            // Decode: first byte has odd bits, second has even bits
+            let decoded = (nibbles[0] << 1) | 1;
+            let decoded = decoded & nibbles[1];
+            assert_eq!(decoded, val, "4-and-4 round trip failed for {}", val);
+        }
+    }
+
+    /// Simulate the boot ROM's read sequence: poll data latch, find sector 0, decode data.
+    #[test]
+    fn test_boot_rom_read_simulation() {
+        // Create a disk with known sector 0 data
+        let mut dsk = vec![0u8; 143360];
+        // Fill sector 0 with a known pattern (first 256 bytes of .dsk file)
+        for i in 0..256 {
+            dsk[i] = i as u8;
+        }
+
+        let mut disk = DiskII::new();
+        disk.load_dsk(&dsk).unwrap();
+        disk.motor_on = true;
+        disk.write_mode = false;
+
+        // Simulate polling the data latch like the boot ROM does
+        fn read_byte(disk: &mut DiskII) -> u8 {
+            for _ in 0..1000 {
+                let val = disk.io_read(0xC0EC);
+                disk.step(4); // LDA cycles
+                if val & 0x80 != 0 {
+                    return val;
+                }
+                disk.step(3); // BPL cycles
+            }
+            panic!("Timeout waiting for byte");
+        }
+
+        // Find address field: D5 AA 96
+        for _ in 0..10000 {
+            let b = read_byte(&mut disk);
+            if b != 0xD5 { continue; }
+            let b = read_byte(&mut disk);
+            if b != 0xAA { continue; }
+            let b = read_byte(&mut disk);
+            if b != 0x96 { continue; }
+
+            // Read address field (4-and-4 encoded: volume, track, sector, checksum)
+            let vol_odd = read_byte(&mut disk);
+            let vol_even = read_byte(&mut disk);
+            let volume = (vol_odd << 1 | 1) & vol_even;
+
+            let trk_odd = read_byte(&mut disk);
+            let trk_even = read_byte(&mut disk);
+            let track_num = (trk_odd << 1 | 1) & trk_even;
+
+            let sec_odd = read_byte(&mut disk);
+            let sec_even = read_byte(&mut disk);
+            let sector_num = (sec_odd << 1 | 1) & sec_even;
+
+            let _chk_odd = read_byte(&mut disk);
+            let _chk_even = read_byte(&mut disk);
+
+            if sector_num == 0 && track_num == 0 {
+                // Now find data field: D5 AA AD
+                for _ in 0..200 {
+                    let b = read_byte(&mut disk);
+                    if b != 0xD5 { continue; }
+                    let b = read_byte(&mut disk);
+                    if b != 0xAA { continue; }
+                    let b = read_byte(&mut disk);
+                    if b != 0xAD { continue; }
+
+                    // Read 343 data nibbles
+                    let read_table = build_read_table();
+                    let mut raw = [0u8; 343];
+                    for j in 0..343 {
+                        let nibble = read_byte(&mut disk);
+                        raw[j] = read_table[nibble as usize];
+                        assert_ne!(raw[j], 0xFF,
+                            "Invalid nibble ${:02X} at data byte {} (volume={}, track={}, sector={})",
+                            nibble, j, volume, track_num, sector_num);
+                    }
+
+                    // XOR unchain
+                    let mut prev = 0u8;
+                    let mut aux = [0u8; 86];
+                    for i in 0..86 {
+                        aux[85 - i] = raw[i] ^ prev;
+                        prev = aux[85 - i];
+                    }
+                    let mut primary = [0u8; 256];
+                    for i in 0..256 {
+                        primary[i] = raw[86 + i] ^ prev;
+                        prev = primary[i];
+                    }
+                    let checksum = raw[342] ^ prev;
+                    assert_eq!(checksum, 0, "Data field checksum mismatch");
+
+                    // Recombine
+                    let mut decoded = [0u8; 256];
+                    for i in 0..256 {
+                        let aux_idx = 85 - (i % 86);
+                        let shift = (i / 86) * 2;
+                        let low2_swapped = (aux[aux_idx] >> shift) & 3;
+                        let low2 = ((low2_swapped & 1) << 1) | ((low2_swapped >> 1) & 1);
+                        decoded[i] = (primary[i] << 2) | low2;
+                    }
+
+                    // Verify: should match our input (0, 1, 2, ..., 255)
+                    for i in 0..256 {
+                        assert_eq!(decoded[i], i as u8,
+                            "Data mismatch at byte {}: got ${:02X}, expected ${:02X}",
+                            i, decoded[i], i as u8);
+                    }
+                    return; // Success!
+                }
+                panic!("Data field prologue not found after address field");
+            }
+        }
+        panic!("Sector 0 address field not found");
+    }
+
+    #[test]
+    fn test_interleave_is_invertible() {
+        // Verify the interleave table maps 16 unique values
+        let mut seen = [false; 16];
+        for &v in DOS33_PHYSICAL_TO_LOGICAL.iter() {
+            assert!(v < 16, "Interleave value out of range: {}", v);
+            assert!(!seen[v], "Duplicate interleave value: {}", v);
+            seen[v] = true;
+        }
     }
 }
 
-/// Nibblize a single track of 16 × 256-byte sectors into GCR-encoded nibble stream.
+/// Sector ordering for .dsk/.po disk images.
+enum SectorOrder {
+    Dos33,
+    ProDos,
+}
+
+/// Check if data at an offset looks like a ProDOS volume directory header.
+/// Storage type $F, name length 1-15, name is uppercase letters/digits/period.
+fn is_prodos_volume_header(data: &[u8]) -> bool {
+    let storage_type = data[0] >> 4;
+    let name_len = data[0] & 0x0F;
+    if storage_type != 0x0F || name_len == 0 || name_len > 15 {
+        return false;
+    }
+    (1..=name_len as usize).all(|i| {
+        let c = data[i];
+        (c >= b'A' && c <= b'Z') || (c >= b'0' && c <= b'9') || c == b'.'
+    })
+}
+
+/// Detect whether a 143360-byte disk image is in DOS 3.3 or ProDOS sector order.
+///
+/// For ProDOS disks, the volume directory is at block 2. Its location in the
+/// file differs depending on sector order:
+///   - ProDOS order (.po): block 2 = file sectors 4,5 → byte offset 1024
+///   - DOS 3.3 order (.dsk): block 2 = physical sectors 8,10 → DOS logical 11,10
+///     → byte offset 2816
+fn detect_sector_order(data: &[u8]) -> SectorOrder {
+    // Check for ProDOS volume directory at block 2 in BOTH possible locations.
+    let po_dir = 4 * 256;   // ProDOS order: sector 4
+    let do_dir = 11 * 256;  // DOS order: physical 8 → DOS logical 11
+
+    let po_valid = is_prodos_volume_header(&data[po_dir..]);
+    let do_valid = is_prodos_volume_header(&data[do_dir..]);
+
+    if po_valid && !do_valid {
+        return SectorOrder::ProDos;
+    }
+    if do_valid && !po_valid {
+        return SectorOrder::Dos33;
+    }
+
+    // Neither or both matched — fall back to DOS 3.3 VTOC check.
+    let vtoc_offset = 17 * 16 * 256;
+    let vtoc_track = data[vtoc_offset + 1];
+    let vtoc_sector = data[vtoc_offset + 2];
+    let vtoc_version = data[vtoc_offset + 3];
+    if vtoc_track == 0x11 && vtoc_sector == 0x0F && vtoc_version == 3 {
+        return SectorOrder::Dos33;
+    }
+
+    // Default to DOS 3.3 order
+    SectorOrder::Dos33
+}
+
+/// Nibblize a single track using the DOS 3.3 interleave (used by tests).
+#[cfg(test)]
 fn nibblize_track(track: u8, track_data: &[u8]) -> [u8; TRACK_NIBBLE_SIZE] {
+    nibblize_track_with_interleave(track, track_data, &DOS33_PHYSICAL_TO_LOGICAL)
+}
+
+/// Nibblize a single track of 16 × 256-byte sectors into GCR-encoded nibble stream.
+fn nibblize_track_with_interleave(
+    track: u8,
+    track_data: &[u8],
+    interleave: &[usize; 16],
+) -> [u8; TRACK_NIBBLE_SIZE] {
     let mut nibbles = [0u8; TRACK_NIBBLE_SIZE];
     let mut pos = 0;
 
     let volume = 254u8;
 
     for physical_sector in 0..16 {
-        // DOS 3.3 interleave: map physical sector to logical sector
-        let logical_sector = DOS33_INTERLEAVE[physical_sector];
+        let logical_sector = interleave[physical_sector];
         let sector_data = &track_data[logical_sector * 256..logical_sector * 256 + 256];
 
         // Gap 1: sync bytes
@@ -296,11 +697,12 @@ fn encode_4and4(nibbles: &mut [u8; TRACK_NIBBLE_SIZE], pos: &mut usize, val: u8)
 
 /// 6-and-2 encode 256 bytes of sector data into 342 + 1 nibbles.
 fn encode_6and2(nibbles: &mut [u8; TRACK_NIBBLE_SIZE], pos: &mut usize, data: &[u8]) {
-    // Step 1: Build auxiliary buffer (86 bytes) from low 2 bits of each byte
+    // Step 1: Build auxiliary buffer (86 bytes) from low 2 bits of each byte.
+    // The low 2 bits are reversed (bit 0 ↔ bit 1) per Apple II RWTS convention.
     let mut aux = [0u8; 86];
     for i in 0..256 {
-        let low2 = data[i] & 0x03;
-        let aux_idx = i % 86;
+        let low2 = ((data[i] & 0x01) << 1) | ((data[i] & 0x02) >> 1);
+        let aux_idx = 85 - (i % 86);
         let shift = (i / 86) * 2;
         aux[aux_idx] |= low2 << shift;
     }

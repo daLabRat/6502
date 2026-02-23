@@ -145,10 +145,11 @@ impl D64Image {
             let next_sector = data[1];
 
             if next_track == 0 {
-                // Last sector: next_sector holds the number of used bytes
+                // Last sector: next_sector is the index of the last valid byte.
+                // Data bytes occupy positions 2 through `used`, inclusive.
                 let used = next_sector as usize;
-                if used >= 2 && used <= 256 {
-                    result.extend_from_slice(&data[2..used]);
+                if used >= 2 {
+                    result.extend_from_slice(&data[2..=used]);
                 }
             } else {
                 result.extend_from_slice(&data[2..256]);
@@ -179,6 +180,123 @@ impl D64Image {
         }
 
         Err(format!("File not found: {:?}", String::from_utf8_lossy(name)))
+    }
+
+    /// Generate a BASIC-formatted directory listing (as loaded by LOAD"$",8).
+    /// Returns data in PRG format: 2-byte load address + BASIC program.
+    pub fn generate_directory_listing(&self) -> Vec<u8> {
+        let load_addr: u16 = 0x0401;
+        let mut result = Vec::new();
+        // PRG load address header
+        result.push(load_addr as u8);
+        result.push((load_addr >> 8) as u8);
+
+        let mut addr = load_addr;
+
+        // Read BAM (track 18, sector 0) for disk name and ID
+        let bam = self.read_sector(18, 0).unwrap_or(&[0; 256]);
+        let disk_name = &bam[0x90..0xA0]; // 16 bytes, $A0 padded
+        let disk_id = &bam[0xA2..0xA4];   // 2 bytes
+        let dos_type = &bam[0xA5..0xA7];  // 2 bytes ("2A")
+
+        // Header line: 0 "DISK NAME       " ID 2A
+        let line_start = result.len();
+        result.extend_from_slice(&[0x00, 0x00]); // placeholder for next-line pointer
+        result.extend_from_slice(&[0x00, 0x00]); // line number = 0
+        result.push(0x12); // reverse-on
+        result.push(0x22); // opening quote
+        for &b in disk_name {
+            result.push(if b == 0xA0 { 0x20 } else { b });
+        }
+        result.push(0x22); // closing quote
+        result.push(0x20); // space
+        for &b in disk_id {
+            result.push(if b == 0xA0 { 0x20 } else { b });
+        }
+        result.push(0x20); // space
+        for &b in dos_type {
+            result.push(if b == 0xA0 { 0x20 } else { b });
+        }
+        result.push(0x00); // end of line
+        addr += (result.len() - line_start) as u16;
+        // Fix up next-line pointer
+        result[line_start] = addr as u8;
+        result[line_start + 1] = (addr >> 8) as u8;
+
+        // File entries
+        let dir = self.read_directory();
+        let type_names: [&[u8]; 8] = [
+            b"DEL", b"SEQ", b"PRG", b"USR", b"REL",
+            b"???", b"???", b"???",
+        ];
+        for entry in &dir {
+            let line_start = result.len();
+            result.extend_from_slice(&[0x00, 0x00]); // placeholder for next-line pointer
+            let blocks = entry.file_size_sectors;
+            result.push(blocks as u8);
+            result.push((blocks >> 8) as u8);
+
+            // Padding spaces before filename (right-justify block count)
+            if blocks < 10 {
+                result.extend_from_slice(b"   ");
+            } else if blocks < 100 {
+                result.extend_from_slice(b"  ");
+            } else if blocks < 1000 {
+                result.push(0x20);
+            }
+
+            result.push(0x22); // opening quote
+            let name_len = entry.name.iter()
+                .position(|&b| b == 0xA0)
+                .unwrap_or(16);
+            for &b in &entry.name[..name_len] {
+                result.push(b);
+            }
+            result.push(0x22); // closing quote
+
+            // Padding after filename
+            for _ in name_len..16 {
+                result.push(0x20);
+            }
+            result.push(0x20); // space
+            let ft = (entry.file_type & 0x07) as usize;
+            result.extend_from_slice(type_names[ft.min(7)]);
+            result.push(0x00); // end of line
+
+            addr += (result.len() - line_start) as u16;
+            result[line_start] = addr as u8;
+            result[line_start + 1] = (addr >> 8) as u8;
+        }
+
+        // "BLOCKS FREE." line
+        let blocks_free = self.count_free_blocks(bam);
+        let line_start = result.len();
+        result.extend_from_slice(&[0x00, 0x00]); // placeholder for next-line pointer
+        result.push(blocks_free as u8);
+        result.push((blocks_free >> 8) as u8);
+        result.extend_from_slice(b"BLOCKS FREE.");
+        result.push(0x00); // end of line
+        addr += (result.len() - line_start) as u16;
+        result[line_start] = addr as u8;
+        result[line_start + 1] = (addr >> 8) as u8;
+
+        // End of BASIC program
+        result.extend_from_slice(&[0x00, 0x00]);
+
+        result
+    }
+
+    /// Count free blocks from BAM data.
+    fn count_free_blocks(&self, bam: &[u8]) -> u16 {
+        let mut free = 0u16;
+        // BAM entries at bytes $04-$8F: 4 bytes per track, 35 tracks
+        // First byte of each 4-byte entry = number of free sectors on that track
+        for track in 0..35u8 {
+            if track == 17 { continue; } // Skip track 18 (directory track)
+            let offset = 0x04 + track as usize * 4;
+            free += bam[offset] as u16;
+        }
+        free
     }
 
     /// Load the first PRG file from the directory.

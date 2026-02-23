@@ -6,8 +6,27 @@ mod menu;
 mod screens;
 mod system_roms;
 
+use std::io::Write;
+
 fn main() -> eframe::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Log to /tmp/emu.log for easy debugging
+    let log_file = std::fs::File::create("/tmp/emu.log").expect("Cannot create /tmp/emu.log");
+    let log_file = std::sync::Mutex::new(log_file);
+
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format(move |buf, record| {
+            use std::fmt::Write as FmtWrite;
+            let mut line = String::new();
+            let _ = writeln!(&mut line, "[{} {}] {}",
+                record.level(), record.target(), record.args());
+            // Write to log file
+            if let Ok(mut f) = log_file.lock() {
+                let _ = f.write_all(line.as_bytes());
+                let _ = f.flush();
+            }
+            write!(buf, "{}", line)
+        })
+        .init();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

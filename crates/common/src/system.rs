@@ -28,6 +28,13 @@ pub trait SystemEmulator {
     /// The native display height of this system.
     fn display_height(&self) -> u32;
 
+    /// Display aspect ratio (width / height) for correct rendering.
+    /// Most retro systems output non-square pixels onto 4:3 CRTs.
+    /// Defaults to 4:3. Override only if the system uses a different display ratio.
+    fn display_aspect_ratio(&self) -> f64 {
+        4.0 / 3.0
+    }
+
     /// Target frames per second (e.g., 60 for NTSC, 50 for PAL).
     fn target_fps(&self) -> f64 {
         60.0

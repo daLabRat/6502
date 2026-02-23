@@ -85,7 +85,7 @@ impl Ppu {
     }
 
     /// Read a PPU register (CPU-mapped at $2000-$2007).
-    pub fn read_register(&mut self, addr: u16, mapper: &dyn crate::cartridge::mapper::Mapper) -> u8 {
+    pub fn read_register(&mut self, addr: u16, mapper: &mut dyn crate::cartridge::mapper::Mapper) -> u8 {
         match addr & 0x07 {
             // $2002: PPUSTATUS
             2 => {
@@ -273,7 +273,7 @@ impl Ppu {
     }
 
     /// Internal PPU memory read.
-    fn ppu_read(&self, addr: u16, mapper: &dyn crate::cartridge::mapper::Mapper) -> u8 {
+    fn ppu_read(&self, addr: u16, mapper: &mut dyn crate::cartridge::mapper::Mapper) -> u8 {
         match addr {
             0x0000..=0x1FFF => mapper.ppu_read(addr),
             0x2000..=0x3EFF => {
@@ -351,7 +351,7 @@ impl Ppu {
     }
 
     /// Evaluate sprites for the current scanline.
-    fn evaluate_sprites(&mut self, _mapper: &dyn crate::cartridge::mapper::Mapper) {
+    fn evaluate_sprites(&mut self, _mapper: &mut dyn crate::cartridge::mapper::Mapper) {
         let sprite_height: i16 = if self.ctrl & 0x20 != 0 { 16 } else { 8 };
         self.sprite_count = 0;
         self.sprite_zero_on_line = false;
@@ -382,7 +382,7 @@ impl Ppu {
     }
 
     /// Pre-fetch 33 background tiles into the scanline buffer.
-    fn fill_bg_scanline_buffer(&mut self, mapper: &dyn crate::cartridge::mapper::Mapper) {
+    fn fill_bg_scanline_buffer(&mut self, mapper: &mut dyn crate::cartridge::mapper::Mapper) {
         let pattern_base: u16 = if self.ctrl & 0x10 != 0 { 0x1000 } else { 0x0000 };
         let fine_y = (self.v >> 12) & 0x07;
         let saved_v = self.v;
@@ -419,7 +419,7 @@ impl Ppu {
     }
 
     /// Pre-compute sprite pixels into scanline buffers.
-    fn fill_sprite_scanline_buffer(&mut self, mapper: &dyn crate::cartridge::mapper::Mapper) {
+    fn fill_sprite_scanline_buffer(&mut self, mapper: &mut dyn crate::cartridge::mapper::Mapper) {
         self.sprite_pixel_buffer = [0; 256];
         self.sprite_palette_buffer = [0; 256];
         self.sprite_priority_buffer = [false; 256];

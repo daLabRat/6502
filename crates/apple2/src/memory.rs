@@ -67,7 +67,7 @@ impl Memory {
         //   12KB: Apple II+ firmware ($D000-$FFFF)
         //   16KB: Full $C000-$FFFF
         //   20KB: 8KB padding/chargen + 12KB firmware (use last 12KB)
-        //   32KB: Apple IIe (use first 16KB — main firmware)
+        //   32KB: Apple IIe (auto-detect which half has firmware)
         if data.len() == 20480 {
             // 20KB ROM: skip first 8KB (padding/chargen), load 12KB at $D000
             let firmware = &data[8192..];
@@ -75,8 +75,69 @@ impl Memory {
             let len = firmware.len().min(self.rom.len() - offset);
             self.rom[offset..offset + len].copy_from_slice(&firmware[..len]);
         } else if data.len() > 16384 {
-            // IIe-style 32KB ROM: first 16KB is main firmware ($C000-$FFFF)
-            self.rom.copy_from_slice(&data[..16384]);
+            // IIe-style ROM (32KB or larger): auto-detect which 16KB half
+            // has the firmware by checking the reset vector.
+            // The reset vector at $FFFC-$FFFD (offset $3FFC in each half)
+            // should point to ROM space ($C000+).
+            let half1 = &data[..16384];
+            let half2 = &data[16384..32768.min(data.len())];
+
+            let vec1 = if half1.len() >= 0x4000 {
+                let lo = half1[0x3FFC] as u16;
+                let hi = half1[0x3FFD] as u16;
+                (hi << 8) | lo
+            } else {
+                0
+            };
+            let vec2 = if half2.len() >= 0x4000 {
+                let lo = half2[0x3FFC] as u16;
+                let hi = half2[0x3FFD] as u16;
+                (hi << 8) | lo
+            } else {
+                0
+            };
+
+            // Pick the half with a reset vector pointing into ROM ($C000+).
+            // If both halves have valid reset vectors (common in IIe dumps where
+            // one half has chargen ROM at $C000-$CFFF and the other has internal
+            // peripheral ROM), prefer the half with actual code at $C100-$C1FF.
+            let both_valid = vec1 >= 0xC000 && vec1 != 0xFFFF
+                          && vec2 >= 0xC000 && vec2 != 0xFFFF;
+
+            let firmware = if both_valid {
+                // Check which half has actual firmware at $C100-$C1FF vs chargen data.
+                // Character ROM is typically filled with uniform bytes (e.g., $A0).
+                // Count unique byte values in the $C100-$C1FF region of each half.
+                let unique1 = {
+                    let mut seen = [false; 256];
+                    for &b in &half1[0x100..0x200] { seen[b as usize] = true; }
+                    seen.iter().filter(|&&s| s).count()
+                };
+                let unique2 = {
+                    let mut seen = [false; 256];
+                    for &b in &half2[0x100..0x200] { seen[b as usize] = true; }
+                    seen.iter().filter(|&&s| s).count()
+                };
+                if unique2 > unique1 {
+                    log::info!("ROM: using second 16KB half (reset=${:04X}, C100 has {} unique bytes vs {})",
+                        vec2, unique2, unique1);
+                    half2
+                } else {
+                    log::info!("ROM: using first 16KB half (reset=${:04X}, C100 has {} unique bytes vs {})",
+                        vec1, unique1, unique2);
+                    half1
+                }
+            } else if vec1 >= 0xC000 && vec1 != 0xFFFF {
+                log::info!("ROM: using first 16KB half (reset=${:04X})", vec1);
+                half1
+            } else if vec2 >= 0xC000 && vec2 != 0xFFFF {
+                log::info!("ROM: using second 16KB half (reset=${:04X})", vec2);
+                half2
+            } else {
+                log::warn!("ROM: neither half has valid reset vector (half1=${:04X}, half2=${:04X}), using first", vec1, vec2);
+                half1
+            };
+            self.rom.copy_from_slice(firmware);
         } else if data.len() <= 12288 {
             // 12KB ROM: load at $D000 (offset 4096 into 16KB ROM space)
             let offset = 4096;
@@ -90,6 +151,12 @@ impl Memory {
     }
 
     pub fn read(&self, addr: u16) -> u8 {
+        self.read_banked(addr, false)
+    }
+
+    /// Read with ALTZP awareness: when altzp is true, language card
+    /// reads come from auxiliary banks instead of main banks.
+    pub fn read_banked(&self, addr: u16, altzp: bool) -> u8 {
         match addr {
             0x0000..=0xBFFF => self.ram[addr as usize],
             0xC000..=0xCFFF => {
@@ -98,10 +165,18 @@ impl Memory {
             }
             0xD000..=0xDFFF => {
                 if self.lc_read_enable {
-                    if self.lc_bank1 {
-                        self.lc_ram[(addr - 0xD000) as usize]
+                    if altzp {
+                        if self.lc_bank1 {
+                            self.aux_lc_ram[(addr - 0xD000) as usize]
+                        } else {
+                            self.aux_lc_bank2[(addr - 0xD000) as usize]
+                        }
                     } else {
-                        self.lc_bank2[(addr - 0xD000) as usize]
+                        if self.lc_bank1 {
+                            self.lc_ram[(addr - 0xD000) as usize]
+                        } else {
+                            self.lc_bank2[(addr - 0xD000) as usize]
+                        }
                     }
                 } else {
                     self.rom[(addr - 0xC000) as usize]
@@ -109,7 +184,11 @@ impl Memory {
             }
             0xE000..=0xFFFF => {
                 if self.lc_read_enable {
-                    self.lc_ram[(addr - 0xD000) as usize]
+                    if altzp {
+                        self.aux_lc_ram[(addr - 0xD000) as usize]
+                    } else {
+                        self.lc_ram[(addr - 0xD000) as usize]
+                    }
                 } else {
                     self.rom[(addr - 0xC000) as usize]
                 }
@@ -118,20 +197,38 @@ impl Memory {
     }
 
     pub fn write(&mut self, addr: u16, val: u8) {
+        self.write_banked(addr, val, false);
+    }
+
+    /// Write with ALTZP awareness: when altzp is true, language card
+    /// writes go to auxiliary banks instead of main banks.
+    pub fn write_banked(&mut self, addr: u16, val: u8, altzp: bool) {
         match addr {
             0x0000..=0xBFFF => self.ram[addr as usize] = val,
             0xD000..=0xDFFF => {
                 if self.lc_write_enable {
-                    if self.lc_bank1 {
-                        self.lc_ram[(addr - 0xD000) as usize] = val;
+                    if altzp {
+                        if self.lc_bank1 {
+                            self.aux_lc_ram[(addr - 0xD000) as usize] = val;
+                        } else {
+                            self.aux_lc_bank2[(addr - 0xD000) as usize] = val;
+                        }
                     } else {
-                        self.lc_bank2[(addr - 0xD000) as usize] = val;
+                        if self.lc_bank1 {
+                            self.lc_ram[(addr - 0xD000) as usize] = val;
+                        } else {
+                            self.lc_bank2[(addr - 0xD000) as usize] = val;
+                        }
                     }
                 }
             }
             0xE000..=0xFFFF => {
                 if self.lc_write_enable {
-                    self.lc_ram[(addr - 0xD000) as usize] = val;
+                    if altzp {
+                        self.aux_lc_ram[(addr - 0xD000) as usize] = val;
+                    } else {
+                        self.lc_ram[(addr - 0xD000) as usize] = val;
+                    }
                 }
             }
             _ => {}
@@ -141,7 +238,8 @@ impl Memory {
     /// Handle language card soft switches ($C080-$C08F).
     pub fn handle_lc_switch(&mut self, addr: u16) {
         let switch = addr & 0x0F;
-        self.lc_bank1 = switch & 0x08 == 0;
+        // $C080-$C087 = bank 2 (lc_bank1=false), $C088-$C08F = bank 1 (lc_bank1=true)
+        self.lc_bank1 = switch & 0x08 != 0;
 
         match switch & 0x03 {
             0 => {

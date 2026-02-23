@@ -26,6 +26,8 @@ pub struct C64 {
     pending_prg: Option<Vec<u8>>,
     /// Frames to wait before injecting PRG (lets KERNAL boot finish).
     boot_frames: u32,
+    /// Whether to auto-type RUN after PRG injection (for D64 auto-load).
+    auto_run: bool,
     /// Keys to release after a delay (for shifted chars from Text events).
     pending_releases: Vec<PendingRelease>,
     /// Virtual disk drive for D64 images.
@@ -56,6 +58,7 @@ impl C64 {
             cpu,
             pending_prg: Some(rom_data.to_vec()),
             boot_frames: 0,
+            auto_run: false,
             pending_releases: Vec::new(),
             kernal_drive: kernal_traps::KernalDrive::new(None),
         })
@@ -74,13 +77,15 @@ impl C64 {
             cpu,
             pending_prg: None,
             boot_frames: 0,
+            auto_run: false,
             pending_releases: Vec::new(),
             kernal_drive: kernal_traps::KernalDrive::new(None),
         }
     }
 
     /// Create a C64 with system ROMs and a D64 disk image mounted.
-    /// Boots to BASIC prompt with the disk accessible via LOAD"*",8,1.
+    /// Auto-loads the first PRG from the D64 after boot and types RUN.
+    /// The D64 remains mounted for runtime disk access via KERNAL traps.
     pub fn from_d64(
         basic: &[u8],
         kernal: &[u8],
@@ -88,6 +93,8 @@ impl C64 {
         d64_data: &[u8],
     ) -> Result<Self, String> {
         let d64 = d64_image::D64Image::parse(d64_data)?;
+        let prg_data = d64.load_first_prg()?;
+
         let mut bus = C64Bus::new();
         bus.memory.load_roms(basic, kernal, char_rom);
 
@@ -97,8 +104,9 @@ impl C64 {
 
         Ok(Self {
             cpu,
-            pending_prg: None,
+            pending_prg: Some(prg_data),
             boot_frames: 0,
+            auto_run: true,
             pending_releases: Vec::new(),
             kernal_drive: kernal_traps::KernalDrive::new(Some(d64)),
         })
@@ -113,11 +121,20 @@ impl C64 {
     }
 
     /// Inject a pending PRG into RAM and set up BASIC pointers.
+    /// Also writes "RUN\r" to the KERNAL keyboard buffer to auto-start.
     fn inject_pending_prg(&mut self) {
         if let Some(prg_data) = self.pending_prg.take() {
             match rom_loader::load_prg(&prg_data, &mut self.cpu.bus.memory.ram) {
                 Ok(load_addr) => {
                     log::info!("Injected PRG at ${:04X} after boot", load_addr);
+                    if self.auto_run {
+                        // Write "RUN\r" to KERNAL keyboard buffer ($0277-$0280)
+                        self.cpu.bus.memory.ram[0x0277] = b'R';
+                        self.cpu.bus.memory.ram[0x0278] = b'U';
+                        self.cpu.bus.memory.ram[0x0279] = b'N';
+                        self.cpu.bus.memory.ram[0x027A] = 0x0D; // Return
+                        self.cpu.bus.memory.ram[0x00C6] = 4;
+                    }
                 }
                 Err(e) => {
                     log::error!("Failed to inject PRG: {}", e);
@@ -255,16 +272,24 @@ impl SystemEmulator for C64 {
             if let Some((row, col)) = ascii_to_matrix(ascii) {
                 if event.pressed {
                     self.cpu.bus.cia1.key_down(row, col);
+                    // Schedule delayed release — Text events (,./;: etc.) only
+                    // send press without release, so we auto-release after 3 frames.
+                    // For held Key events, the release event cancels this pending.
+                    self.pending_releases.retain(|pr| pr.row != row || pr.col != col);
+                    self.pending_releases.push(PendingRelease {
+                        row, col, frames_left: 3,
+                    });
                 } else {
+                    // Explicit release (from Key event) — cancel pending and release now
+                    self.pending_releases.retain(|pr| pr.row != row || pr.col != col);
                     self.cpu.bus.cia1.key_up(row, col);
                 }
             } else if let Some((row, col)) = shifted_ascii_to_matrix(ascii) {
                 if event.pressed {
-                    // Press shift + key now, schedule release in 3 frames
-                    // (Text events send press+release instantly — CIA needs
-                    // time to scan the matrix)
                     self.cpu.bus.cia1.key_down(LEFT_SHIFT.0, LEFT_SHIFT.1);
                     self.cpu.bus.cia1.key_down(row, col);
+                    self.pending_releases.retain(|pr| !(pr.row == row && pr.col == col)
+                        && !(pr.row == LEFT_SHIFT.0 && pr.col == LEFT_SHIFT.1));
                     self.pending_releases.push(PendingRelease {
                         row, col, frames_left: 3,
                     });

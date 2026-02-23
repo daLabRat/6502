@@ -79,7 +79,7 @@ impl Apu {
                 if !self.enabled[1] { self.pulse2.length_counter = 0; }
                 if !self.enabled[2] { self.triangle.length_counter = 0; }
                 if !self.enabled[3] { self.noise.length_counter = 0; }
-                // DMC flag handling omitted for now
+                self.dmc.set_enabled(self.enabled[4]);
                 self.frame_irq_pending = false;
             }
             0x4017 => {
@@ -106,7 +106,9 @@ impl Apu {
         if self.pulse2.length_counter > 0 { val |= 0x02; }
         if self.triangle.length_counter > 0 { val |= 0x04; }
         if self.noise.length_counter > 0 { val |= 0x08; }
+        if self.dmc.bytes_remaining() > 0 { val |= 0x10; }
         if self.frame_irq_pending { val |= 0x40; }
+        if self.dmc.irq_pending { val |= 0x80; }
         self.frame_irq_pending = false;
         val
     }
@@ -115,8 +117,9 @@ impl Apu {
     pub fn step(&mut self) {
         self.cpu_cycles += 1;
 
-        // Triangle ticks at CPU rate
+        // Triangle and DMC tick at CPU rate
         self.triangle.tick_timer();
+        self.dmc.tick();
 
         // Other channels tick at half CPU rate
         if self.cpu_cycles % 2 == 0 {
@@ -199,17 +202,18 @@ impl Apu {
         let p2 = if self.enabled[1] { self.pulse2.output() as f32 } else { 0.0 };
         let tri = if self.enabled[2] { self.triangle.output() as f32 } else { 0.0 };
         let noise = if self.enabled[3] { self.noise.output() as f32 } else { 0.0 };
-        let _dmc = if self.enabled[4] { self.dmc.output() as f32 } else { 0.0 };
+        let dmc = if self.enabled[4] { self.dmc.output() as f32 } else { 0.0 };
 
-        // Linear approximation mixing
+        // Linear approximation mixing (from NESDev wiki)
         let pulse_out = if p1 + p2 > 0.0 {
             95.88 / ((8128.0 / (p1 + p2)) + 100.0)
         } else {
             0.0
         };
 
-        let tnd_out = if tri + noise > 0.0 {
-            159.79 / ((1.0 / (tri / 8227.0 + noise / 12241.0)) + 100.0)
+        let tnd_sum = tri / 8227.0 + noise / 12241.0 + dmc / 22638.0;
+        let tnd_out = if tnd_sum > 0.0 {
+            159.79 / ((1.0 / tnd_sum) + 100.0)
         } else {
             0.0
         };
@@ -227,7 +231,7 @@ impl Apu {
 
     /// Check if the APU is asserting IRQ.
     pub fn irq_pending(&self) -> bool {
-        self.frame_irq_pending
+        self.frame_irq_pending || self.dmc.irq_pending
     }
 }
 

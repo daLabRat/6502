@@ -103,7 +103,7 @@ impl EmuApp {
     fn load_rom(&mut self, system: SystemChoice) {
         let filter = match system {
             SystemChoice::Nes => ("NES ROMs", &["nes", "NES"][..]),
-            SystemChoice::Apple2 => ("Apple II ROMs", &["rom", "ROM", "bin", "BIN", "dsk", "DSK"][..]),
+            SystemChoice::Apple2 => ("Apple II ROMs", &["rom", "ROM", "bin", "BIN", "dsk", "DSK", "do", "DO", "po", "PO"][..]),
             SystemChoice::C64 => ("C64 Programs", &["prg", "PRG", "rom", "ROM", "bin", "BIN", "t64", "T64", "d64", "D64"][..]),
             SystemChoice::Atari2600 => ("Atari 2600 ROMs", &["a26", "A26", "bin", "BIN", "rom", "ROM"][..]),
         };
@@ -136,8 +136,8 @@ impl EmuApp {
                                 .unwrap_or("")
                                 .to_ascii_lowercase();
 
-                            if ext == "dsk" {
-                                // .dsk disk image: need system ROM + disk II ROM
+                            if ext == "dsk" || ext == "do" || ext == "po" {
+                                // .dsk/.do/.po disk image: need system ROM + disk II ROM
                                 let sys_rom = crate::system_roms::load_apple2_rom(&roms_dir);
                                 let disk_rom = crate::system_roms::load_disk_ii_rom(&roms_dir);
 
@@ -321,7 +321,8 @@ impl eframe::App for EmuApp {
 
                         // Render framebuffer
                         let fb = sys.framebuffer();
-                        crate::screens::emulation::render(ui, &mut self.texture, fb);
+                        let aspect = sys.display_aspect_ratio() as f32;
+                        crate::screens::emulation::render(ui, &mut self.texture, fb, aspect);
                     }
                 }
             }

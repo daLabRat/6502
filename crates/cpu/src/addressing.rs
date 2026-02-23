@@ -27,6 +27,8 @@ pub enum AddrMode {
     IndirectIndexed,
     /// 8-bit signed offset for branch instructions
     Relative,
+    /// 65C02: Zero-page indirect (no index): (zp)
+    ZeroPageIndirect,
 }
 
 impl AddrMode {
@@ -40,6 +42,7 @@ impl AddrMode {
             | AddrMode::ZeroPageY
             | AddrMode::IndexedIndirect
             | AddrMode::IndirectIndexed
+            | AddrMode::ZeroPageIndirect
             | AddrMode::Relative => 1,
             AddrMode::Absolute
             | AddrMode::AbsoluteX

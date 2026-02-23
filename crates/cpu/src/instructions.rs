@@ -62,9 +62,14 @@ impl<B: Bus> Cpu6502<B> {
             }
             AddrMode::Indirect => {
                 let ptr = self.fetch_word();
-                // 6502 bug: if pointer is at xxFF, high byte wraps within page
                 let lo = self.bus.read(ptr) as u16;
-                let hi_addr = (ptr & 0xFF00) | ((ptr + 1) & 0x00FF);
+                // NMOS 6502 bug: high byte wraps within page at $xxFF
+                // CMOS 65C02 fixes this — reads from next address correctly
+                let hi_addr = if self.cmos_mode {
+                    ptr.wrapping_add(1)
+                } else {
+                    (ptr & 0xFF00) | ((ptr + 1) & 0x00FF)
+                };
                 let hi = self.bus.read(hi_addr) as u16;
                 let addr = (hi << 8) | lo;
                 (Operand::Address(addr), false)
@@ -91,6 +96,14 @@ impl<B: Bus> Cpu6502<B> {
             AddrMode::Relative => {
                 let offset = self.fetch_byte() as i8;
                 (Operand::Relative(offset), false)
+            }
+            AddrMode::ZeroPageIndirect => {
+                // 65C02: (zp) — pointer at zp, no index
+                let ptr = self.fetch_byte();
+                let lo = self.bus.read(ptr as u16) as u16;
+                let hi = self.bus.read(ptr.wrapping_add(1) as u16) as u16;
+                let addr = (hi << 8) | lo;
+                (Operand::Address(addr), false)
             }
         }
     }
@@ -270,8 +283,11 @@ impl<B: Bus> Cpu6502<B> {
             Mnemonic::BIT => {
                 let val = self.read_operand(&operand);
                 self.p.set(crate::flags::StatusFlags::ZERO, (self.a & val) == 0);
-                self.p.set(crate::flags::StatusFlags::NEGATIVE, val & 0x80 != 0);
-                self.p.set(crate::flags::StatusFlags::OVERFLOW, val & 0x40 != 0);
+                // 65C02: BIT #imm only sets Z, not N/V
+                if !matches!(operand, Operand::Immediate(_)) {
+                    self.p.set(crate::flags::StatusFlags::NEGATIVE, val & 0x80 != 0);
+                    self.p.set(crate::flags::StatusFlags::OVERFLOW, val & 0x40 != 0);
+                }
                 0
             }
 
@@ -288,7 +304,14 @@ impl<B: Bus> Cpu6502<B> {
             // --- Jump ---
             Mnemonic::JMP => {
                 if let Operand::Address(addr) = operand {
-                    self.pc = addr;
+                    if mode == AddrMode::AbsoluteX {
+                        // 65C02 JMP (abs,X): addr is the pointer, read target from it
+                        let lo = self.bus.read(addr) as u16;
+                        let hi = self.bus.read(addr.wrapping_add(1)) as u16;
+                        self.pc = (hi << 8) | lo;
+                    } else {
+                        self.pc = addr;
+                    }
                 }
                 0
             }
@@ -332,14 +355,53 @@ impl<B: Bus> Cpu6502<B> {
                 self.push(self.pc as u8);
                 self.push(self.p.to_stack(true));
                 self.p.insert(crate::flags::StatusFlags::IRQ_DISABLE);
+                // 65C02: clear D flag on BRK
+                if self.cmos_mode {
+                    self.p.remove(crate::flags::StatusFlags::DECIMAL);
+                }
                 let lo = self.bus.read(0xFFFE) as u16;
                 let hi = self.bus.read(0xFFFF) as u16;
                 self.pc = (hi << 8) | lo;
                 0
             }
             Mnemonic::NOP => extra,
+
+            // --- 65C02 extensions ---
+            Mnemonic::BRA => self.branch(true, &operand),
+            Mnemonic::PHX => { self.push(self.x); 0 }
+            Mnemonic::PLX => { let val = self.pull(); self.x = self.p.set_nz(val); 0 }
+            Mnemonic::PHY => { self.push(self.y); 0 }
+            Mnemonic::PLY => { let val = self.pull(); self.y = self.p.set_nz(val); 0 }
+            Mnemonic::STZ => { self.write_operand(&operand, 0); 0 }
+            Mnemonic::INA => { self.a = self.a.wrapping_add(1); self.p.set_nz(self.a); 0 }
+            Mnemonic::DEA => { self.a = self.a.wrapping_sub(1); self.p.set_nz(self.a); 0 }
+            Mnemonic::TRB => {
+                let val = self.read_operand(&operand);
+                self.p.set(crate::flags::StatusFlags::ZERO, (self.a & val) == 0);
+                self.write_operand(&operand, val & !self.a);
+                0
+            }
+            Mnemonic::TSB => {
+                let val = self.read_operand(&operand);
+                self.p.set(crate::flags::StatusFlags::ZERO, (self.a & val) == 0);
+                self.write_operand(&operand, val | self.a);
+                0
+            }
+
             Mnemonic::JAM => {
-                log::warn!("JAM (illegal opcode) hit at PC=${:04X}", self.pc.wrapping_sub(1));
+                let jam_pc = self.pc.wrapping_sub(1);
+                let opcode = self.bus.peek(jam_pc);
+                log::warn!("JAM (illegal opcode ${:02X}) hit at PC=${:04X}", opcode, jam_pc);
+                // Dump surrounding bytes for debugging
+                let start = jam_pc.saturating_sub(8);
+                let mut dump = String::new();
+                for addr in start..start.wrapping_add(24) {
+                    if addr == jam_pc { dump.push_str("["); }
+                    dump.push_str(&format!("{:02X}", self.bus.peek(addr)));
+                    if addr == jam_pc { dump.push_str("]"); }
+                    dump.push(' ');
+                }
+                log::warn!("  Memory around PC: ${:04X}: {}", start, dump.trim());
                 self.jammed = true;
                 0
             }

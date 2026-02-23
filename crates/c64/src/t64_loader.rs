@@ -36,10 +36,8 @@ pub fn extract_first_prg(data: &[u8]) -> Result<Vec<u8>, String> {
 
         let entry = &data[entry_offset..entry_offset + 32];
         let entry_type = entry[0];
-        let file_type = entry[1];
 
         // entry_type: 0=free, 1=normal tape file, 3=memory snapshot
-        // file_type: 0x82 = PRG (C64 file type), but also accept 1 (common in many T64s)
         if entry_type == 0 {
             continue;
         }
@@ -48,15 +46,15 @@ pub fn extract_first_prg(data: &[u8]) -> Result<Vec<u8>, String> {
         }
 
         let start_addr = u16::from_le_bytes([entry[2], entry[3]]);
-        let end_addr = u16::from_le_bytes([entry[4], entry[5]]);
         let tape_offset = u32::from_le_bytes([entry[8], entry[9], entry[10], entry[11]]) as usize;
 
         if tape_offset == 0 || tape_offset >= data.len() {
             continue;
         }
 
-        // Calculate payload size: prefer offset difference, fall back to end_addr
-        let payload_size = if i + 1 < max_entries {
+        // Calculate data size: prefer offset to next entry, fall back to rest of file.
+        // We do NOT trust end_addr — it's unreliable in many T64 files.
+        let data_size = if i + 1 < max_entries {
             let next_entry_offset = 0x40 + (i + 1) * 32;
             if next_entry_offset + 12 <= data.len() {
                 let next_tape_offset = u32::from_le_bytes([
@@ -68,34 +66,47 @@ pub fn extract_first_prg(data: &[u8]) -> Result<Vec<u8>, String> {
                 if next_tape_offset > tape_offset && next_tape_offset <= data.len() {
                     next_tape_offset - tape_offset
                 } else {
-                    // Fall back to end_addr or remaining file
-                    calc_size_from_addrs(start_addr, end_addr, tape_offset, data.len())
+                    data.len() - tape_offset
                 }
             } else {
-                calc_size_from_addrs(start_addr, end_addr, tape_offset, data.len())
+                data.len() - tape_offset
             }
         } else {
-            // Last entry: use remaining file data or end_addr
-            calc_size_from_addrs(start_addr, end_addr, tape_offset, data.len())
+            // Last (or only) entry: use all remaining file data
+            data.len() - tape_offset
         };
 
-        if payload_size == 0 {
+        if data_size == 0 {
             continue;
         }
 
-        let end = (tape_offset + payload_size).min(data.len());
-        let payload = &data[tape_offset..end];
+        let end = (tape_offset + data_size).min(data.len());
+        let file_data = &data[tape_offset..end];
 
-        // Build PRG: 2-byte load address (LE) + payload
-        let mut prg = Vec::with_capacity(2 + payload.len());
+        // Most T64 files store the data as a complete PRG (2-byte load address + payload).
+        // Check if the first 2 bytes match the directory's start_addr — if so, the data
+        // already includes the load address and is a valid PRG as-is.
+        if file_data.len() >= 2 {
+            let embedded_addr = u16::from_le_bytes([file_data[0], file_data[1]]);
+            if embedded_addr == start_addr {
+                // Data is already a complete PRG
+                log::info!(
+                    "T64: extracted entry {} (load=${:04X}, {} bytes, PRG with header)",
+                    i, start_addr, file_data.len() - 2
+                );
+                return Ok(file_data.to_vec());
+            }
+        }
+
+        // Data does not include load address — prepend it
+        let mut prg = Vec::with_capacity(2 + file_data.len());
         prg.push(start_addr as u8);
         prg.push((start_addr >> 8) as u8);
-        prg.extend_from_slice(payload);
+        prg.extend_from_slice(file_data);
 
-        let _ = file_type; // Acknowledge unused binding
         log::info!(
-            "T64: extracted entry {} (type={}, load=${:04X}, {} bytes)",
-            i, entry_type, start_addr, payload.len()
+            "T64: extracted entry {} (load=${:04X}, {} bytes, raw payload)",
+            i, start_addr, file_data.len()
         );
         return Ok(prg);
     }
@@ -103,51 +114,67 @@ pub fn extract_first_prg(data: &[u8]) -> Result<Vec<u8>, String> {
     Err("No usable PRG entries found in T64 file".into())
 }
 
-/// Calculate payload size from start/end addresses, with file-size fallback.
-fn calc_size_from_addrs(start: u16, end: u16, tape_offset: usize, file_len: usize) -> usize {
-    if end > start {
-        (end - start) as usize
-    } else {
-        // end_addr is unreliable — use rest of file
-        file_len.saturating_sub(tape_offset)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_prg_from_t64() {
-        // Build a minimal T64 with one PRG entry
+    fn test_extract_prg_with_embedded_header() {
+        // T64 where the data already includes the 2-byte load address
         let mut t64 = vec![0u8; 256];
-
-        // Magic
         t64[0..16].copy_from_slice(b"C64 tape image \0");
+        t64[0x22] = 1; // total entries
+        t64[0x24] = 1; // used entries
 
-        // Header: 1 entry total, 1 used
-        t64[0x22] = 1;
-        t64[0x24] = 1;
-
-        // Directory entry at 0x40
-        t64[0x40] = 1; // entry type: normal
+        // Directory entry
+        t64[0x40] = 1;    // entry type: normal
         t64[0x41] = 0x82; // file type: PRG
         t64[0x42] = 0x01; // start addr low: $0801
         t64[0x43] = 0x08; // start addr high
-        t64[0x44] = 0x05; // end addr low: $0805
-        t64[0x45] = 0x08; // end addr high
-        // tape offset = 0x60 (after header+dir)
-        t64[0x48] = 0x60;
+        t64[0x44] = 0x05; // end addr low (unreliable)
+        t64[0x45] = 0x08;
+        t64[0x48] = 0x60; // tape offset
 
-        // Payload at offset 0x60
-        t64[0x60] = 0xAA;
-        t64[0x61] = 0xBB;
-        t64[0x62] = 0xCC;
-        t64[0x63] = 0xDD;
+        // Data at 0x60: PRG with embedded load address
+        t64[0x60] = 0x01; // load addr low (matches start_addr)
+        t64[0x61] = 0x08; // load addr high
+        t64[0x62] = 0xAA; // payload
+        t64[0x63] = 0xBB;
 
         let prg = extract_first_prg(&t64).unwrap();
-        assert_eq!(prg[0], 0x01); // load addr low
-        assert_eq!(prg[1], 0x08); // load addr high
-        assert_eq!(&prg[2..6], &[0xAA, 0xBB, 0xCC, 0xDD]);
+        // Should return data as-is (already a valid PRG)
+        assert_eq!(prg[0], 0x01);
+        assert_eq!(prg[1], 0x08);
+        assert_eq!(prg[2], 0xAA);
+        assert_eq!(prg[3], 0xBB);
+        assert_eq!(prg.len(), t64.len() - 0x60); // uses rest of file
+    }
+
+    #[test]
+    fn test_extract_prg_without_header() {
+        // T64 where the data is raw payload (no embedded load address)
+        let mut t64 = vec![0u8; 256];
+        t64[0..16].copy_from_slice(b"C64 tape image \0");
+        t64[0x22] = 1;
+        t64[0x24] = 1;
+
+        t64[0x40] = 1;
+        t64[0x41] = 0x82;
+        t64[0x42] = 0x01; // start addr $0801
+        t64[0x43] = 0x08;
+        t64[0x48] = 0x60;
+
+        // Data at 0x60: raw payload (first 2 bytes DON'T match start_addr)
+        t64[0x60] = 0x0B; // BASIC next-line pointer
+        t64[0x61] = 0x08;
+        t64[0x62] = 0x0A;
+        t64[0x63] = 0x00;
+
+        let prg = extract_first_prg(&t64).unwrap();
+        // Should prepend load address
+        assert_eq!(prg[0], 0x01); // prepended load addr low
+        assert_eq!(prg[1], 0x08); // prepended load addr high
+        assert_eq!(prg[2], 0x0B); // original data
+        assert_eq!(prg[3], 0x08);
     }
 }

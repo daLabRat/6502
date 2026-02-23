@@ -47,7 +47,7 @@ impl Bus for NesBus {
         match addr {
             0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => {
-                self.ppu.read_register(addr, self.cartridge.mapper.as_ref())
+                self.ppu.read_register(addr, self.cartridge.mapper.as_mut())
             }
             0x4015 => self.apu.read_status(),
             0x4016 => self.controller1.read(),
@@ -115,6 +115,17 @@ impl Bus for NesBus {
         // APU runs at CPU clock rate
         for _ in 0..total_cpu_cycles {
             self.apu.step();
+            self.cartridge.mapper.cpu_tick();
+
+            // Service DMC DMA request
+            if let Some(addr) = self.apu.dmc.dma_request.take() {
+                let byte = match addr {
+                    0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
+                    0x8000..=0xFFFF => self.cartridge.mapper.cpu_read(addr),
+                    _ => 0,
+                };
+                self.apu.dmc.receive_dma_byte(byte);
+            }
         }
 
         // Check PPU NMI
