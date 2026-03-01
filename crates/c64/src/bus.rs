@@ -11,6 +11,9 @@ pub struct C64Bus {
     pub sid: Sid,
     pub cia1: Cia,
     pub cia2: Cia,
+    /// IEC bus input bits for CIA2 Port A (bit 6=CLK in, bit 7=DATA in).
+    /// Updated by the system emulator from the shared IEC bus each cycle.
+    pub(crate) iec_input: u8,
 }
 
 impl C64Bus {
@@ -21,7 +24,14 @@ impl C64Bus {
             sid: Sid::new(),
             cia1: Cia::new(true),
             cia2: Cia::new(false),
+            iec_input: 0xC0, // Both CLK and DATA released (high) by default
         }
+    }
+
+    /// Get the VIC-II bank base address from CIA2 Port A bits 0-1 (inverted).
+    fn vic_bank_base(&self) -> u16 {
+        let bits = !self.cia2.pra & 0x03;
+        (bits as u16) * 0x4000
     }
 }
 
@@ -43,7 +53,15 @@ impl Bus for C64Bus {
                 self.cia1.read_register(addr)
             }
             0xDD00..=0xDDFF if self.memory.io_visible() => {
-                self.cia2.read_register(addr)
+                let val = self.cia2.read_register(addr);
+                if addr & 0x0F == 0x00 {
+                    // Port A: merge IEC bus input on bits 6-7 (active low)
+                    // Output bits (DDRA=1) from CIA, input bits (DDRA=0) from IEC bus
+                    let ddra = self.cia2.ddra;
+                    (val & ddra) | (self.iec_input & !ddra)
+                } else {
+                    val
+                }
             }
             _ => self.memory.read(addr),
         }
@@ -76,11 +94,27 @@ impl Bus for C64Bus {
     }
 
     fn tick(&mut self, cycles: u8) {
+        // Update VIC bank from CIA2 before stepping
+        self.vic.vic_bank_base = self.vic_bank_base();
+
         for _ in 0..cycles {
             self.vic.step(&self.memory.ram, &self.memory.char_rom);
             self.sid.step();
             self.cia1.step();
             self.cia2.step();
+        }
+
+        // Consume badline stall cycles — caller (CPU) should skip these
+        if self.vic.stall_cycles > 0 {
+            let stall = self.vic.stall_cycles;
+            self.vic.stall_cycles = 0;
+            // Step hardware for the stall period (VIC steals these cycles)
+            for _ in 0..stall {
+                self.vic.step(&self.memory.ram, &self.memory.char_rom);
+                self.sid.step();
+                self.cia1.step();
+                self.cia2.step();
+            }
         }
     }
 

@@ -21,6 +21,12 @@ fn try_load(path: &Path) -> Option<Vec<u8>> {
 const C64_BASIC_NAMES: &[&str] = &["basic.rom", "basic", "basic.bin", "901226-01.bin"];
 const C64_KERNAL_NAMES: &[&str] = &["kernal.rom", "kernal", "kernal.bin", "901227-03.bin"];
 const C64_CHARGEN_NAMES: &[&str] = &["chargen.rom", "chargen", "chargen.bin", "characters.rom", "901225-01.bin"];
+const C64_1541_ROM_NAMES: &[&str] = &["1541.rom", "dos1541", "1541-II.rom"];
+/// Split 1541 ROM pairs: (low $C000-$DFFF, high $E000-$FFFF).
+const C64_1541_SPLIT_PAIRS: &[(&str, &str)] = &[
+    ("325302-01.bin", "901229-05.bin"),
+    ("1541-c000.bin", "1541-e000.bin"),
+];
 
 /// Apple II system ROM file names (checked in order of preference).
 const APPLE2_ROM_NAMES: &[&str] = &[
@@ -32,8 +38,8 @@ const APPLE2_ROM_NAMES: &[&str] = &[
 ];
 
 /// Load C64 system ROMs from the given directory.
-/// Returns (basic, kernal, chargen) — each is Some if found.
-pub fn load_c64_roms(dir: &Path) -> (Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>) {
+/// Returns (basic, kernal, chargen, drive_1541) — each is Some if found.
+pub fn load_c64_roms(dir: &Path) -> (Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>) {
     let subdir = dir.join("c64");
 
     let find = |names: &[&str]| -> Option<Vec<u8>> {
@@ -49,10 +55,31 @@ pub fn load_c64_roms(dir: &Path) -> (Option<Vec<u8>>, Option<Vec<u8>>, Option<Ve
         None
     };
 
+    // Try single 16KB 1541 ROM first, then split 8KB+8KB pairs
+    let drive_rom = find(C64_1541_ROM_NAMES).or_else(|| {
+        for &(lo_name, hi_name) in C64_1541_SPLIT_PAIRS {
+            let lo = try_load(&subdir.join(lo_name))
+                .or_else(|| try_load(&dir.join(lo_name)));
+            let hi = try_load(&subdir.join(hi_name))
+                .or_else(|| try_load(&dir.join(hi_name)));
+            if let (Some(lo_data), Some(hi_data)) = (lo, hi) {
+                if lo_data.len() >= 8192 && hi_data.len() >= 8192 {
+                    let mut combined = Vec::with_capacity(16384);
+                    combined.extend_from_slice(&lo_data[..8192]);
+                    combined.extend_from_slice(&hi_data[..8192]);
+                    log::info!("Combined split 1541 ROMs: {} + {}", lo_name, hi_name);
+                    return Some(combined);
+                }
+            }
+        }
+        None
+    });
+
     (
         find(C64_BASIC_NAMES),
         find(C64_KERNAL_NAMES),
         find(C64_CHARGEN_NAMES),
+        drive_rom,
     )
 }
 

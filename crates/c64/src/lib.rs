@@ -1,16 +1,21 @@
 pub mod bus;
 pub mod cia;
 pub mod d64_image;
+pub mod drive1541;
+pub mod iec_bus;
 pub mod kernal_traps;
 pub mod memory;
 pub mod rom_loader;
 pub mod sid;
 pub mod t64_loader;
+pub mod via;
 pub mod vic_ii;
 
 use emu_common::{AudioSample, Button, FrameBuffer, InputEvent, SystemEmulator};
 use emu_cpu::Cpu6502;
 use bus::C64Bus;
+use drive1541::bus::Drive1541Bus;
+use iec_bus::IecBus;
 
 /// A key release scheduled for a future frame.
 struct PendingRelease {
@@ -22,6 +27,10 @@ struct PendingRelease {
 /// Commodore 64 system emulator.
 pub struct C64 {
     cpu: Cpu6502<C64Bus>,
+    /// Optional 1541 drive CPU (present when 1541 ROM is available and D64 loaded).
+    drive_cpu: Option<Cpu6502<Drive1541Bus>>,
+    /// Shared IEC bus state (used when drive_cpu is present).
+    iec_bus: IecBus,
     /// PRG data to inject after KERNAL boot completes.
     pending_prg: Option<Vec<u8>>,
     /// Frames to wait before injecting PRG (lets KERNAL boot finish).
@@ -30,14 +39,12 @@ pub struct C64 {
     auto_run: bool,
     /// Keys to release after a delay (for shifted chars from Text events).
     pending_releases: Vec<PendingRelease>,
-    /// Virtual disk drive for D64 images.
+    /// Virtual disk drive for D64 images (KERNAL trap fallback).
     kernal_drive: kernal_traps::KernalDrive,
 }
 
 impl C64 {
     /// Create a C64 from PRG data.
-    /// If system ROMs are loaded later, the PRG injection is deferred
-    /// until after the KERNAL boot sequence completes.
     pub fn from_rom(rom_data: &[u8]) -> Result<Self, String> {
         if rom_data.is_empty() {
             return Err("ROM data is empty".into());
@@ -45,7 +52,6 @@ impl C64 {
 
         let bus = C64Bus::new();
 
-        // Validate PRG format but don't load yet — will be deferred if system ROMs are present
         if rom_data.len() < 3 {
             return Err("PRG file too small (need at least 3 bytes)".into());
         }
@@ -56,6 +62,8 @@ impl C64 {
 
         Ok(Self {
             cpu,
+            drive_cpu: None,
+            iec_bus: IecBus::new(),
             pending_prg: Some(rom_data.to_vec()),
             boot_frames: 0,
             auto_run: false,
@@ -75,6 +83,8 @@ impl C64 {
 
         Self {
             cpu,
+            drive_cpu: None,
+            iec_bus: IecBus::new(),
             pending_prg: None,
             boot_frames: 0,
             auto_run: false,
@@ -84,16 +94,26 @@ impl C64 {
     }
 
     /// Create a C64 with system ROMs and a D64 disk image mounted.
-    /// Auto-loads the first PRG from the D64 after boot and types RUN.
-    /// The D64 remains mounted for runtime disk access via KERNAL traps.
+    /// If a 1541 ROM is provided, uses full drive emulation.
+    /// Otherwise, falls back to KERNAL traps.
     pub fn from_d64(
         basic: &[u8],
         kernal: &[u8],
         char_rom: &[u8],
         d64_data: &[u8],
     ) -> Result<Self, String> {
+        Self::from_d64_with_drive_rom(basic, kernal, char_rom, d64_data, None)
+    }
+
+    /// Create a C64 with system ROMs, D64 image, and optional 1541 ROM.
+    pub fn from_d64_with_drive_rom(
+        basic: &[u8],
+        kernal: &[u8],
+        char_rom: &[u8],
+        d64_data: &[u8],
+        drive_rom: Option<&[u8]>,
+    ) -> Result<Self, String> {
         let d64 = d64_image::D64Image::parse(d64_data)?;
-        let prg_data = d64.load_first_prg()?;
 
         let mut bus = C64Bus::new();
         bus.memory.load_roms(basic, kernal, char_rom);
@@ -102,13 +122,39 @@ impl C64 {
         cpu.bcd_enabled = true;
         cpu.reset();
 
+        // Try to set up full 1541 drive emulation
+        let (drive_cpu, kernal_drive, pending_prg, auto_run) = if let Some(rom) = drive_rom {
+            if rom.len() >= 16384 {
+                // Full 1541 emulation
+                let mut drive_bus = Drive1541Bus::new(rom.to_vec());
+                drive_bus.disk.load_d64(d64_data);
+
+                let mut dcpu = Cpu6502::new(drive_bus);
+                dcpu.bcd_enabled = true;
+                dcpu.reset();
+
+                log::info!("1541 drive emulation active (16KB ROM loaded)");
+                (Some(dcpu), kernal_traps::KernalDrive::new(None), None, false)
+            } else {
+                log::warn!("1541 ROM too small ({} bytes), falling back to KERNAL traps", rom.len());
+                let prg_data = d64.load_first_prg()?;
+                (None, kernal_traps::KernalDrive::new(Some(d64)), Some(prg_data), true)
+            }
+        } else {
+            // No 1541 ROM — use KERNAL trap fallback
+            let prg_data = d64.load_first_prg()?;
+            (None, kernal_traps::KernalDrive::new(Some(d64)), Some(prg_data), true)
+        };
+
         Ok(Self {
             cpu,
-            pending_prg: Some(prg_data),
+            drive_cpu,
+            iec_bus: IecBus::new(),
+            pending_prg,
             boot_frames: 0,
-            auto_run: true,
+            auto_run,
             pending_releases: Vec::new(),
-            kernal_drive: kernal_traps::KernalDrive::new(Some(d64)),
+            kernal_drive,
         })
     }
 
@@ -116,23 +162,20 @@ impl C64 {
     pub fn load_system_roms(&mut self, basic: &[u8], kernal: &[u8], char_rom: &[u8]) {
         self.cpu.bus.memory.load_roms(basic, kernal, char_rom);
         self.cpu.reset();
-        // Reset boot frame counter — PRG will be injected after boot
         self.boot_frames = 0;
     }
 
     /// Inject a pending PRG into RAM and set up BASIC pointers.
-    /// Also writes "RUN\r" to the KERNAL keyboard buffer to auto-start.
     fn inject_pending_prg(&mut self) {
         if let Some(prg_data) = self.pending_prg.take() {
             match rom_loader::load_prg(&prg_data, &mut self.cpu.bus.memory.ram) {
                 Ok(load_addr) => {
                     log::info!("Injected PRG at ${:04X} after boot", load_addr);
                     if self.auto_run {
-                        // Write "RUN\r" to KERNAL keyboard buffer ($0277-$0280)
                         self.cpu.bus.memory.ram[0x0277] = b'R';
                         self.cpu.bus.memory.ram[0x0278] = b'U';
                         self.cpu.bus.memory.ram[0x0279] = b'N';
-                        self.cpu.bus.memory.ram[0x027A] = 0x0D; // Return
+                        self.cpu.bus.memory.ram[0x027A] = 0x0D;
                         self.cpu.bus.memory.ram[0x00C6] = 4;
                     }
                 }
@@ -141,6 +184,23 @@ impl C64 {
                 }
             }
         }
+    }
+
+    /// Sync IEC bus between C64 and 1541 drive.
+    fn sync_iec(&mut self) {
+        // C64 → IEC bus: push CIA2 PA output to IEC bus lines
+        let cia2_pa = self.cpu.bus.cia2.pra & self.cpu.bus.cia2.ddra;
+        self.iec_bus.update_from_cia2(cia2_pa);
+
+        // IEC bus → 1541 drive
+        if let Some(ref mut dcpu) = self.drive_cpu {
+            dcpu.bus.sync_iec_input(&self.iec_bus);
+            // 1541 → IEC bus
+            dcpu.bus.sync_iec_output(&mut self.iec_bus);
+        }
+
+        // IEC bus → C64: update CIA2 PA input bits (bit 6=CLK, bit 7=DATA)
+        self.cpu.bus.iec_input = self.iec_bus.cia2_input_bits();
     }
 }
 
@@ -203,23 +263,22 @@ fn ascii_to_matrix(key: u8) -> Option<(u8, u8)> {
 }
 
 /// Map shifted ASCII characters to their base key + left shift.
-/// Returns (base_row, base_col) — caller must also press left shift (1, 7).
 fn shifted_ascii_to_matrix(key: u8) -> Option<(u8, u8)> {
     match key {
-        b'"' => Some((7, 3)),  // Shift + 2
-        b'!' => Some((7, 0)),  // Shift + 1
-        b'#' => Some((1, 0)),  // Shift + 3
-        b'$' => Some((1, 3)),  // Shift + 4
-        b'%' => Some((2, 0)),  // Shift + 5
-        b'&' => Some((2, 3)),  // Shift + 6
-        b'\'' => Some((3, 0)), // Shift + 7
-        b'(' => Some((3, 3)),  // Shift + 8
-        b')' => Some((4, 0)),  // Shift + 9
-        b'?' => Some((6, 7)),  // Shift + /
-        b'<' => Some((5, 7)),  // Shift + ,
-        b'>' => Some((5, 4)),  // Shift + .
-        b'[' => Some((5, 5)),  // Shift + :
-        b']' => Some((6, 2)),  // Shift + ;
+        b'"' => Some((7, 3)),
+        b'!' => Some((7, 0)),
+        b'#' => Some((1, 0)),
+        b'$' => Some((1, 3)),
+        b'%' => Some((2, 0)),
+        b'&' => Some((2, 3)),
+        b'\'' => Some((3, 0)),
+        b'(' => Some((3, 3)),
+        b')' => Some((4, 0)),
+        b'?' => Some((6, 7)),
+        b'<' => Some((5, 7)),
+        b'>' => Some((5, 4)),
+        b'[' => Some((5, 5)),
+        b']' => Some((6, 2)),
         _ => None,
     }
 }
@@ -236,22 +295,34 @@ impl SystemEmulator for C64 {
             }
         }
 
-        // Process pending key releases (shifted chars held for a few frames)
+        // Process pending key releases
         self.pending_releases.retain_mut(|pr| {
             pr.frames_left -= 1;
             if pr.frames_left == 0 {
                 self.cpu.bus.cia1.key_up(pr.row, pr.col);
-                false // remove
+                false
             } else {
-                true // keep
+                true
             }
         });
 
         loop {
-            // Check KERNAL traps before each CPU step
-            if !self.kernal_drive.check_trap(&mut self.cpu) {
+            // Check KERNAL traps (only active when no 1541 drive CPU)
+            if self.drive_cpu.is_none() && !self.kernal_drive.check_trap(&mut self.cpu) {
                 self.cpu.step();
+            } else if self.drive_cpu.is_some() {
+                self.cpu.step();
+                // Sync IEC after C64 step so drive sees current C64 output
+                self.sync_iec();
             }
+
+            // Run drive CPU in lockstep (both at ~1 MHz)
+            if let Some(ref mut dcpu) = self.drive_cpu {
+                dcpu.step();
+                // Sync IEC after drive step so C64 sees current drive output
+                self.sync_iec();
+            }
+
             if self.cpu.bus.vic.is_frame_ready() {
                 break;
             }
@@ -272,15 +343,11 @@ impl SystemEmulator for C64 {
             if let Some((row, col)) = ascii_to_matrix(ascii) {
                 if event.pressed {
                     self.cpu.bus.cia1.key_down(row, col);
-                    // Schedule delayed release — Text events (,./;: etc.) only
-                    // send press without release, so we auto-release after 3 frames.
-                    // For held Key events, the release event cancels this pending.
                     self.pending_releases.retain(|pr| pr.row != row || pr.col != col);
                     self.pending_releases.push(PendingRelease {
                         row, col, frames_left: 3,
                     });
                 } else {
-                    // Explicit release (from Key event) — cancel pending and release now
                     self.pending_releases.retain(|pr| pr.row != row || pr.col != col);
                     self.cpu.bus.cia1.key_up(row, col);
                 }
@@ -297,13 +364,15 @@ impl SystemEmulator for C64 {
                         row: LEFT_SHIFT.0, col: LEFT_SHIFT.1, frames_left: 3,
                     });
                 }
-                // Ignore release — handled by pending_releases
             }
         }
     }
 
     fn reset(&mut self) {
         self.cpu.reset();
+        if let Some(ref mut dcpu) = self.drive_cpu {
+            dcpu.reset();
+        }
     }
 
     fn set_sample_rate(&mut self, rate: u32) {

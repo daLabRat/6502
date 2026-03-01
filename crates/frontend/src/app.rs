@@ -64,7 +64,7 @@ impl EmuApp {
 
         match system {
             SystemChoice::C64 => {
-                let (basic, kernal, chargen) = crate::system_roms::load_c64_roms(&roms_dir);
+                let (basic, kernal, chargen, _drive_rom) = crate::system_roms::load_c64_roms(&roms_dir);
                 if let (Some(basic), Some(kernal), Some(chargen)) = (basic, kernal, chargen) {
                     let mut c64 = emu_c64::C64::with_roms(&basic, &kernal, &chargen);
                     c64.reset();
@@ -165,7 +165,7 @@ impl EmuApp {
                             }
                         }
                         SystemChoice::C64 => {
-                            let (basic, kernal, chargen) = crate::system_roms::load_c64_roms(&roms_dir);
+                            let (basic, kernal, chargen, drive_rom) = crate::system_roms::load_c64_roms(&roms_dir);
                             let has_roms = basic.is_some() && kernal.is_some() && chargen.is_some();
 
                             let ext = path.extension()
@@ -176,11 +176,12 @@ impl EmuApp {
                             if ext == "d64" {
                                 // D64: boot with mounted disk image (needs system ROMs)
                                 if has_roms {
-                                    emu_c64::C64::from_d64(
+                                    emu_c64::C64::from_d64_with_drive_rom(
                                         basic.as_deref().unwrap(),
                                         kernal.as_deref().unwrap(),
                                         chargen.as_deref().unwrap(),
                                         &data,
+                                        drive_rom.as_deref(),
                                     ).map(|c| Box::new(c) as Box<dyn SystemEmulator>)
                                 } else {
                                     Err("C64 system ROMs required for D64 disk images. \

@@ -267,6 +267,22 @@ pub struct Tia {
     pub hmm1: i8,
     pub hmbl: i8,
 
+    // HMOVE blanking
+    hmove_pending: bool,
+    hmove_blanking: u8,
+
+    // Position pipeline delays (4-5 color clock delay for RESPx/RESMx/RESBL)
+    resp0_delay: u8,
+    resp0_pending: u8,
+    resp1_delay: u8,
+    resp1_pending: u8,
+    resm0_delay: u8,
+    resm0_pending: u8,
+    resm1_delay: u8,
+    resm1_pending: u8,
+    resbl_delay: u8,
+    resbl_pending: u8,
+
     // Input ports (fire buttons): true = not pressed (bit 7 high)
     pub inpt4: bool,
     pub inpt5: bool,
@@ -308,6 +324,13 @@ impl Tia {
             colup0: 0, colup1: 0, colupf: 0, colubk: 0,
             nusiz0: 0, nusiz1: 0, ctrlpf: 0,
             hmp0: 0, hmp1: 0, hmm0: 0, hmm1: 0, hmbl: 0,
+            hmove_pending: false,
+            hmove_blanking: 0,
+            resp0_delay: 0, resp0_pending: 0,
+            resp1_delay: 0, resp1_pending: 0,
+            resm0_delay: 0, resm0_pending: 0,
+            resm1_delay: 0, resm1_pending: 0,
+            resbl_delay: 0, resbl_pending: 0,
             inpt4: true, inpt5: true,
             collision: [0; 8],
             scanline: 0, clock: 0,
@@ -366,25 +389,30 @@ impl Tia {
             0x0D => self.pf0 = val,
             0x0E => self.pf1 = val,
             0x0F => self.pf2 = val,
-            0x10 => { // RESP0
-                let pos = self.clock as i16 - 68;
-                self.resp0 = if pos < 0 { 0 } else { (pos as u8) % 160 };
+            0x10 => { // RESP0 — position takes effect after ~5 color clock delay
+                let pos = self.clock as i16 - 68 + 5;
+                self.resp0_pending = if pos < 0 { 0 } else { (pos as u8) % 160 };
+                self.resp0_delay = 5;
             }
             0x11 => { // RESP1
-                let pos = self.clock as i16 - 68;
-                self.resp1 = if pos < 0 { 0 } else { (pos as u8) % 160 };
+                let pos = self.clock as i16 - 68 + 5;
+                self.resp1_pending = if pos < 0 { 0 } else { (pos as u8) % 160 };
+                self.resp1_delay = 5;
             }
             0x12 => { // RESM0
-                let pos = self.clock as i16 - 68;
-                self.resm0 = if pos < 0 { 0 } else { (pos as u8) % 160 };
+                let pos = self.clock as i16 - 68 + 4;
+                self.resm0_pending = if pos < 0 { 0 } else { (pos as u8) % 160 };
+                self.resm0_delay = 4;
             }
             0x13 => { // RESM1
-                let pos = self.clock as i16 - 68;
-                self.resm1 = if pos < 0 { 0 } else { (pos as u8) % 160 };
+                let pos = self.clock as i16 - 68 + 4;
+                self.resm1_pending = if pos < 0 { 0 } else { (pos as u8) % 160 };
+                self.resm1_delay = 4;
             }
             0x14 => { // RESBL
-                let pos = self.clock as i16 - 68;
-                self.resbl = if pos < 0 { 0 } else { (pos as u8) % 160 };
+                let pos = self.clock as i16 - 68 + 4;
+                self.resbl_pending = if pos < 0 { 0 } else { (pos as u8) % 160 };
+                self.resbl_delay = 4;
             }
             0x15 => self.audio_ch[0].audc = val & 0x0F, // AUDC0
             0x16 => self.audio_ch[1].audc = val & 0x0F, // AUDC1
@@ -422,6 +450,7 @@ impl Tia {
                 self.resm0 = ((self.resm0 as i16 - self.hmm0 as i16).rem_euclid(160)) as u8;
                 self.resm1 = ((self.resm1 as i16 - self.hmm1 as i16).rem_euclid(160)) as u8;
                 self.resbl = ((self.resbl as i16 - self.hmbl as i16).rem_euclid(160)) as u8;
+                self.hmove_pending = true;
             }
             0x2B => { // HMCLR
                 self.hmp0 = 0; self.hmp1 = 0;
@@ -445,6 +474,28 @@ impl Tia {
 
     /// Step the TIA by one color clock (3 per CPU cycle).
     pub fn step_clock(&mut self) {
+        // ── Position pipeline delays ──
+        if self.resp0_delay > 0 {
+            self.resp0_delay -= 1;
+            if self.resp0_delay == 0 { self.resp0 = self.resp0_pending; }
+        }
+        if self.resp1_delay > 0 {
+            self.resp1_delay -= 1;
+            if self.resp1_delay == 0 { self.resp1 = self.resp1_pending; }
+        }
+        if self.resm0_delay > 0 {
+            self.resm0_delay -= 1;
+            if self.resm0_delay == 0 { self.resm0 = self.resm0_pending; }
+        }
+        if self.resm1_delay > 0 {
+            self.resm1_delay -= 1;
+            if self.resm1_delay == 0 { self.resm1 = self.resm1_pending; }
+        }
+        if self.resbl_delay > 0 {
+            self.resbl_delay -= 1;
+            if self.resbl_delay == 0 { self.resbl = self.resbl_pending; }
+        }
+
         // ── Video ──
         let visible_start = 68u16;
         if self.clock >= visible_start && self.clock < visible_start + VISIBLE_WIDTH as u16 {
@@ -452,9 +503,14 @@ impl Tia {
             let y = self.scanline.saturating_sub(40);
 
             if y < VISIBLE_HEIGHT as u16 && !self.vblank {
-                let color = self.get_pixel_color(x as u8);
-                let rgb = TIA_PALETTE[(color as usize) & 0x7F];
-                self.framebuffer.set_pixel_rgb(x, y as u32, rgb);
+                // HMOVE blanking: first 8 visible pixels are black after HMOVE
+                if self.hmove_blanking > 0 && x < 8 {
+                    self.framebuffer.set_pixel_rgb(x, y as u32, 0x000000);
+                } else {
+                    let color = self.get_pixel_color(x as u8);
+                    let rgb = TIA_PALETTE[(color as usize) & 0x7F];
+                    self.framebuffer.set_pixel_rgb(x, y as u32, rgb);
+                }
             }
         }
 
@@ -492,6 +548,14 @@ impl Tia {
             self.clock = 0;
             self.scanline += 1;
             self.wsync = false;
+
+            // Apply HMOVE blanking at start of new scanline
+            if self.hmove_pending {
+                self.hmove_blanking = 8;
+                self.hmove_pending = false;
+            } else {
+                self.hmove_blanking = 0;
+            }
         }
     }
 

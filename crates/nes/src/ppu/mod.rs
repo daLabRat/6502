@@ -257,6 +257,18 @@ impl Ppu {
 
         // Advance timing
         self.cycle += 1;
+
+        // Odd frame skip: on pre-render scanline, if frame_count is odd and
+        // rendering is enabled, skip cycle 339 (jump from 338 to 0 of scanline 0).
+        if self.scanline == -1 && self.cycle == 339
+            && self.frame_count & 1 != 0 && self.rendering_enabled()
+        {
+            self.cycle = 0;
+            self.scanline = 0;
+            self.frame_count += 1;
+            return;
+        }
+
         if self.cycle > 340 {
             self.cycle = 0;
             self.scanline += 1;
