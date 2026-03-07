@@ -41,6 +41,13 @@ pub struct C64 {
     pending_releases: Vec<PendingRelease>,
     /// Virtual disk drive for D64 images (KERNAL trap fallback).
     kernal_drive: kernal_traps::KernalDrive,
+    /// IEC trace countdown (frames remaining). 0 = tracing off.
+    iec_trace_frames: u32,
+    /// Previous IEC bus state for edge detection during tracing.
+    trace_last_atn: bool,
+    trace_last_drive_data: bool,
+    trace_last_drive_clk: bool,
+    trace_last_drive_pc: u16,
 }
 
 impl C64 {
@@ -69,6 +76,11 @@ impl C64 {
             auto_run: false,
             pending_releases: Vec::new(),
             kernal_drive: kernal_traps::KernalDrive::new(None),
+            iec_trace_frames: 0,
+            trace_last_atn: false,
+            trace_last_drive_data: false,
+            trace_last_drive_clk: false,
+            trace_last_drive_pc: 0,
         })
     }
 
@@ -90,6 +102,11 @@ impl C64 {
             auto_run: false,
             pending_releases: Vec::new(),
             kernal_drive: kernal_traps::KernalDrive::new(None),
+            iec_trace_frames: 0,
+            trace_last_atn: false,
+            trace_last_drive_data: false,
+            trace_last_drive_clk: false,
+            trace_last_drive_pc: 0,
         }
     }
 
@@ -155,7 +172,18 @@ impl C64 {
             auto_run,
             pending_releases: Vec::new(),
             kernal_drive,
+            iec_trace_frames: 0,
+            trace_last_atn: false,
+            trace_last_drive_data: false,
+            trace_last_drive_clk: false,
+            trace_last_drive_pc: 0,
         })
+    }
+
+    /// Enable IEC trace logging for the next ~6 seconds (300 frames at 50fps).
+    pub fn enable_iec_trace(&mut self) {
+        self.iec_trace_frames = 300;
+        log::info!("[IEC] Trace enabled for 300 frames");
     }
 
     /// Load system ROMs. Resets the CPU to boot with the new ROMs.
@@ -188,15 +216,58 @@ impl C64 {
 
     /// Sync IEC bus between C64 and 1541 drive.
     fn sync_iec(&mut self) {
+        let tracing = self.iec_trace_frames > 0;
+
         // C64 → IEC bus: push CIA2 PA output to IEC bus lines
         let cia2_pa = self.cpu.bus.cia2.pra & self.cpu.bus.cia2.ddra;
         self.iec_bus.update_from_cia2(cia2_pa);
 
+        if tracing {
+            let atn_now = self.iec_bus.c64_atn;
+            if atn_now != self.trace_last_atn {
+                self.trace_last_atn = atn_now;
+                let (orb, ddrb, ifr) = if let Some(ref dcpu) = self.drive_cpu {
+                    (dcpu.bus.via1.orb, dcpu.bus.via1.ddrb, dcpu.bus.via1.ifr)
+                } else {
+                    (0, 0, 0)
+                };
+                log::info!(
+                    "[IEC] ATN {} | CIA2 PA={:02X} DDRA={:02X} | bus clk={} data={} | drv VIA1 ORB={:02X} DDRB={:02X} IFR={:02X}",
+                    if atn_now { "ASSERTED" } else { "released" },
+                    self.cpu.bus.cia2.pra, self.cpu.bus.cia2.ddra,
+                    self.iec_bus.clk() as u8, self.iec_bus.data() as u8,
+                    orb, ddrb, ifr,
+                );
+            }
+        }
+
         // IEC bus → 1541 drive
         if let Some(ref mut dcpu) = self.drive_cpu {
             dcpu.bus.sync_iec_input(&self.iec_bus);
+
+            if tracing && self.iec_bus.c64_atn {
+                let pc_now = dcpu.pc;
+                if pc_now != self.trace_last_drive_pc {
+                    self.trace_last_drive_pc = pc_now;
+                    log::info!("[IEC] Drive PC={:04X} (ATN active)", pc_now);
+                }
+            }
+
             // 1541 → IEC bus
+            let drive_data_before = self.iec_bus.drive_data;
+            let drive_clk_before = self.iec_bus.drive_clk;
             dcpu.bus.sync_iec_output(&mut self.iec_bus);
+
+            if tracing {
+                if self.iec_bus.drive_data != drive_data_before || drive_data_before != self.trace_last_drive_data {
+                    self.trace_last_drive_data = self.iec_bus.drive_data;
+                    log::info!("[IEC] Drive DATA={}", self.iec_bus.drive_data as u8);
+                }
+                if self.iec_bus.drive_clk != drive_clk_before || drive_clk_before != self.trace_last_drive_clk {
+                    self.trace_last_drive_clk = self.iec_bus.drive_clk;
+                    log::info!("[IEC] Drive CLK={}", self.iec_bus.drive_clk as u8);
+                }
+            }
         }
 
         // IEC bus → C64: update CIA2 PA input bits (bit 6=CLK, bit 7=DATA)
@@ -287,6 +358,11 @@ const LEFT_SHIFT: (u8, u8) = (1, 7);
 
 impl SystemEmulator for C64 {
     fn step_frame(&mut self) -> usize {
+        // Count down IEC trace timer
+        if self.iec_trace_frames > 0 {
+            self.iec_trace_frames -= 1;
+        }
+
         // Inject pending PRG after KERNAL boot completes (~120 frames at 50Hz)
         if self.pending_prg.is_some() {
             self.boot_frames += 1;

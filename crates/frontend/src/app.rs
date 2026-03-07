@@ -182,7 +182,12 @@ impl EmuApp {
                                         chargen.as_deref().unwrap(),
                                         &data,
                                         drive_rom.as_deref(),
-                                    ).map(|c| Box::new(c) as Box<dyn SystemEmulator>)
+                                    ).map(|mut c| {
+                                        // Enable IEC trace for the first 6 seconds so
+                                        // bus activity is visible in the log file.
+                                        c.enable_iec_trace();
+                                        Box::new(c) as Box<dyn SystemEmulator>
+                                    })
                                 } else {
                                     Err("C64 system ROMs required for D64 disk images. \
                                          Place basic.rom, kernal.rom, chargen.rom in roms/c64/".into())

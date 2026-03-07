@@ -14,8 +14,9 @@ emu-nes = { path = "../nes" }
 emu-apple2 = { path = "../apple2" }
 emu-c64 = { path = "../c64" }
 emu-atari2600 = { path = "../atari2600" }
-eframe = "0.30"
+eframe = { version = "0.30", features = ["wgpu"] }
 egui = "0.30"
+bytemuck = { version = "1.16", features = ["derive"] }
 rfd = "0.15"
 gilrs = { version = "0.11", optional = true }
 cpal = { version = "0.15", optional = true }
