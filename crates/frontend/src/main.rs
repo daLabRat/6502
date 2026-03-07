@@ -9,6 +9,17 @@ mod system_roms;
 use std::io::Write;
 
 fn main() -> eframe::Result<()> {
+    // WSL2 clipboard crash workaround:
+    // winit prefers Wayland (WSLg provides WAYLAND_DISPLAY) but arboard uses X11 for
+    // clipboard. When the X11 server drops the clipboard connection the arboard worker
+    // thread errors, which propagates to the winit Wayland event loop and kills the app.
+    // Fix: force X11 backend on WSL2 so both winit and arboard use the same server.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WSL_DISTRO_NAME").is_some() {
+        // SAFETY: called before any threads are spawned (top of main).
+        unsafe { std::env::remove_var("WAYLAND_DISPLAY"); }
+    }
+
     // Log to /tmp/emu.log for easy debugging
     let log_file = std::fs::File::create("/tmp/emu.log").expect("Cannot create /tmp/emu.log");
     let log_file = std::sync::Mutex::new(log_file);
