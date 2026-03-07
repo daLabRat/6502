@@ -134,6 +134,15 @@ impl GcrDisk {
     pub fn load_d64(&mut self, d64_data: &[u8]) {
         self.tracks.clear();
 
+        // Read disk ID from BAM (track 18 sector 0, bytes 162-163).
+        // Every sector header must carry these IDs; the 1541 ROM reads the
+        // ID from the BAM during init and then verifies it on every header read.
+        let bam_offset: usize = (1u8..18)
+            .map(|t| sectors_per_track(t) as usize)
+            .sum::<usize>() * 256; // = 91 392 bytes for a standard D64
+        let disk_id1 = d64_data.get(bam_offset + 162).copied().unwrap_or(0x20);
+        let disk_id2 = d64_data.get(bam_offset + 163).copied().unwrap_or(0x20);
+
         let mut offset = 0usize;
         for track_num in 1..=35u8 {
             let num_sectors = sectors_per_track(track_num);
@@ -141,76 +150,71 @@ impl GcrDisk {
             let mut track_data = Vec::with_capacity(track_size);
 
             for sector in 0..num_sectors {
+                // --- Sector header ---
                 // Sync bytes (5 × $FF)
                 for _ in 0..5 {
                     track_data.push(0xFF);
                 }
 
-                // Header block: checksum, sector, track, ID2, ID1
-                let checksum = sector ^ track_num ^ 0x10 ^ 0x01; // simple XOR
-                let header = [0x08, checksum, sector, track_num]; // header marker
-                let gcr = gcr_encode_group(&header);
-                track_data.extend_from_slice(&gcr);
-                // Second half of header: ID bytes
-                let header2 = [0x10, 0x01, 0x0F, 0x0F]; // ID1, ID2, gap bytes
-                let gcr2 = gcr_encode_group(&header2);
-                track_data.extend_from_slice(&gcr2);
+                // Header block (8 bytes → 2 GCR groups of 4):
+                //   [0x08, checksum, sector, track]  [ID1, ID2, 0x0F, 0x0F]
+                // checksum = sector XOR track XOR ID1 XOR ID2
+                let hdr_checksum = sector ^ track_num ^ disk_id1 ^ disk_id2;
+                track_data.extend_from_slice(&gcr_encode_group(&[0x08, hdr_checksum, sector, track_num]));
+                track_data.extend_from_slice(&gcr_encode_group(&[disk_id1, disk_id2, 0x0F, 0x0F]));
 
-                // Header gap (9 bytes)
+                // Header gap (9 × $55)
                 for _ in 0..9 {
                     track_data.push(0x55);
                 }
 
-                // Data block sync (5 × $FF)
+                // --- Data block ---
+                // Sync bytes (5 × $FF)
                 for _ in 0..5 {
                     track_data.push(0xFF);
                 }
 
-                // Data block: marker byte + 256 bytes of data + checksum
-                // GCR encode in groups of 4 bytes → 5 GCR bytes
+                // Data block layout (260 bytes → 65 GCR groups of 4 → 325 GCR bytes):
+                //   [0x07, d[0], d[1], d[2]]          group 0  (marker + first 3 bytes)
+                //   [d[3], d[4], d[5], d[6]]           group 1
+                //   ...
+                //   [d[251], d[252], d[253], d[254]]   group 63
+                //   [d[255], checksum, 0x00, 0x00]     group 64
+                //
+                // Pre-compute data checksum = XOR of all 256 data bytes.
+                let sector_data_offset = offset + sector as usize * 256;
                 let mut data_checksum = 0u8;
-                let sector_offset = offset + sector as usize * 256;
-
-                // Marker byte + first 3 data bytes
-                let d0 = d64_data.get(sector_offset).copied().unwrap_or(0);
-                let d1 = d64_data.get(sector_offset + 1).copied().unwrap_or(0);
-                let d2 = d64_data.get(sector_offset + 2).copied().unwrap_or(0);
-                data_checksum ^= d0 ^ d1 ^ d2;
-                let group = [0x07, d0, d1, d2]; // data block marker
-                let gcr = gcr_encode_group(&group);
-                track_data.extend_from_slice(&gcr);
-
-                // Remaining 253 bytes + checksum byte (in groups of 4)
-                let mut di = 3;
-                while di < 256 {
-                    let b0 = d64_data.get(sector_offset + di).copied().unwrap_or(0);
-                    let b1 = d64_data.get(sector_offset + di + 1).copied().unwrap_or(0);
-                    let b2 = d64_data.get(sector_offset + di + 2).copied().unwrap_or(0);
-                    let b3 = if di + 3 < 256 {
-                        d64_data.get(sector_offset + di + 3).copied().unwrap_or(0)
-                    } else if di + 3 == 256 {
-                        // Last data byte position gets the checksum
-                        data_checksum ^= b0 ^ b1 ^ b2;
-                        data_checksum
-                    } else {
-                        0
-                    };
-                    data_checksum ^= b0 ^ b1 ^ b2 ^ b3;
-                    let group = [b0, b1, b2, b3];
-                    let gcr = gcr_encode_group(&group);
-                    track_data.extend_from_slice(&gcr);
-                    di += 4;
+                for i in 0..256 {
+                    data_checksum ^= d64_data.get(sector_data_offset + i).copied().unwrap_or(0);
                 }
 
-                // Inter-sector gap
-                let gap_size = (track_size / num_sectors as usize).saturating_sub(track_data.len() / (sector as usize + 1));
-                let gap = gap_size.min(20).max(4);
-                for _ in 0..gap {
+                // Group 0: marker + d[0..2]
+                let d0 = d64_data.get(sector_data_offset).copied().unwrap_or(0);
+                let d1 = d64_data.get(sector_data_offset + 1).copied().unwrap_or(0);
+                let d2 = d64_data.get(sector_data_offset + 2).copied().unwrap_or(0);
+                track_data.extend_from_slice(&gcr_encode_group(&[0x07, d0, d1, d2]));
+
+                // Groups 1-63: d[3..254] (63 full groups of 4)
+                let mut di = 3usize;
+                while di + 3 < 256 {
+                    let b0 = d64_data.get(sector_data_offset + di).copied().unwrap_or(0);
+                    let b1 = d64_data.get(sector_data_offset + di + 1).copied().unwrap_or(0);
+                    let b2 = d64_data.get(sector_data_offset + di + 2).copied().unwrap_or(0);
+                    let b3 = d64_data.get(sector_data_offset + di + 3).copied().unwrap_or(0);
+                    track_data.extend_from_slice(&gcr_encode_group(&[b0, b1, b2, b3]));
+                    di += 4;
+                }
+                // Group 64: d[255] + checksum + two off-bytes
+                let d255 = d64_data.get(sector_data_offset + 255).copied().unwrap_or(0);
+                track_data.extend_from_slice(&gcr_encode_group(&[d255, data_checksum, 0x00, 0x00]));
+
+                // Inter-sector gap (variable, track padded to exact size at end)
+                for _ in 0..8 {
                     track_data.push(0x55);
                 }
             }
 
-            // Pad or truncate to exact track size
+            // Pad or truncate to exact GCR track size
             track_data.resize(track_size, 0x55);
             self.tracks.push(track_data);
 
