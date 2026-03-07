@@ -9,17 +9,18 @@ mod system_roms;
 use std::io::Write;
 
 fn main() -> eframe::Result<()> {
-    // WSL2 clipboard crash workaround:
-    // winit uses Wayland (WSLg provides WAYLAND_DISPLAY) but arboard opens a separate
-    // X11 connection for clipboard. When the X11 server drops that connection the
-    // arboard worker thread errors and kills the whole Wayland event loop.
-    // Fix: remove DISPLAY so arboard skips X11 and uses Wayland clipboard (or nop),
-    // keeping it on the same display server as winit. libxkbcommon-x11 is also not
-    // guaranteed to be installed, so forcing X11 winit isn't viable on WSL2.
+    // WSL2 display backend fix:
+    // Force X11 on WSL2 to avoid two issues:
+    // 1. wgpu's Vulkan Wayland surface integration is unstable in WSLg, causing
+    //    broken pipe errors and ExitFailure(1) from the Wayland event loop.
+    // 2. arboard (clipboard) uses X11 while winit would use Wayland — when the
+    //    X11 connection drops, arboard's worker thread kills the Wayland event loop.
+    // X11 avoids both: winit, wgpu, and arboard all use the same XWayland backend.
+    // Requires: sudo apt install libxkbcommon-x11-0
     #[cfg(target_os = "linux")]
     if std::env::var_os("WSL_DISTRO_NAME").is_some() {
         // SAFETY: called before any threads are spawned (top of main).
-        unsafe { std::env::remove_var("DISPLAY"); }
+        unsafe { std::env::remove_var("WAYLAND_DISPLAY"); }
     }
 
     // Log to /tmp/emu.log for easy debugging
