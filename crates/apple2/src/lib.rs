@@ -1,6 +1,7 @@
 pub mod ay3_8910;
 pub mod bus;
 pub mod disk_ii;
+pub mod mockingboard;
 pub mod keyboard;
 pub mod memory;
 mod snapshot;
@@ -94,7 +95,18 @@ impl SystemEmulator for Apple2 {
     }
 
     fn audio_samples(&mut self, out: &mut [AudioSample]) -> usize {
-        self.cpu.bus.speaker.drain_samples(out)
+        let speaker_n = self.cpu.bus.speaker.drain_samples(out);
+        if self.cpu.bus.mockingboard_present {
+            let mut mb_buf = vec![0.0f32; out.len()];
+            let mb_n = self.cpu.bus.mockingboard.drain_samples(&mut mb_buf);
+            let mix_n = speaker_n.max(mb_n);
+            for i in 0..mix_n {
+                out[i] += mb_buf[i];
+            }
+            mix_n
+        } else {
+            speaker_n
+        }
     }
 
     fn handle_input(&mut self, event: InputEvent) {
@@ -111,6 +123,7 @@ impl SystemEmulator for Apple2 {
 
     fn set_sample_rate(&mut self, rate: u32) {
         self.cpu.bus.speaker.set_sample_rate(rate);
+        self.cpu.bus.mockingboard.set_sample_rate(rate);
     }
 
     fn display_width(&self) -> u32 { 560 }

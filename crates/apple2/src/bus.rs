@@ -1,6 +1,7 @@
 use emu_common::Bus;
 use crate::disk_ii::DiskII;
 use crate::memory::Memory;
+use crate::mockingboard::Mockingboard;
 use crate::soft_switch::SoftSwitches;
 use crate::keyboard::Keyboard;
 use crate::speaker::Speaker;
@@ -14,6 +15,9 @@ pub struct Apple2Bus {
     pub keyboard: Keyboard,
     pub speaker: Speaker,
     pub disk_ii: DiskII,
+    pub mockingboard: Mockingboard,
+    /// Set to true when any write to $C0C0-$C0DF is observed (auto-detect Mockingboard).
+    pub(crate) mockingboard_present: bool,
     pub framebuffer: FrameBuffer,
 
     pub(crate) cycle_count: u64,
@@ -32,6 +36,8 @@ impl Apple2Bus {
             keyboard: Keyboard::new(),
             speaker: Speaker::new(),
             disk_ii: DiskII::new(),
+            mockingboard: Mockingboard::new(),
+            mockingboard_present: false,
             framebuffer: FrameBuffer::new(video::DISPLAY_WIDTH, video::DISPLAY_HEIGHT),
             cycle_count: 0,
             cycles_per_frame: 17030, // ~60fps at 1.023 MHz
@@ -191,6 +197,8 @@ impl Bus for Apple2Bus {
                 self.memory.handle_lc_switch(addr);
                 0
             }
+            // Mockingboard slot 4: I/O at $C0C0-$C0DF
+            0xC0C0..=0xC0DF if self.mockingboard_present => self.mockingboard.io_read(addr),
             // Disk II slot 6: I/O at $C0E0-$C0EF
             0xC0E0..=0xC0EF => self.disk_ii.io_read(addr),
             // Slot ROM space ($C100-$C7FF)
@@ -262,6 +270,11 @@ impl Bus for Apple2Bus {
                 self.memory.handle_lc_switch(addr);
                 self.memory.lc_prewrite = false;
             }
+            // Mockingboard slot 4: I/O at $C0C0-$C0DF (auto-detect on first write)
+            0xC0C0..=0xC0DF => {
+                self.mockingboard_present = true;
+                self.mockingboard.io_write(addr, val);
+            }
             // Disk II slot 6: I/O at $C0E0-$C0EF
             0xC0E0..=0xC0EF => { self.disk_ii.io_write(addr, val); }
             0xCFFF => { self.switches.intc8rom = false; } // Clear expansion ROM
@@ -307,6 +320,10 @@ impl Bus for Apple2Bus {
         }
 
         self.disk_ii.step(cycles);
+
+        for _ in 0..cycles {
+            self.mockingboard.step();
+        }
 
         self.cycle_count += cycles as u64;
 
