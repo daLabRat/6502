@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use crate::crt::CrtMode;
 
@@ -12,6 +13,8 @@ pub struct Config {
     pub system_roms_dir: String,
     pub crt_mode: CrtMode,
     pub saves_dir: String,
+    #[serde(default)]
+    pub recent_roms: HashMap<String, Vec<String>>,
 }
 
 impl Default for Config {
@@ -23,6 +26,7 @@ impl Default for Config {
             system_roms_dir: "roms".into(),
             crt_mode: CrtMode::default(),
             saves_dir: "saves".into(),
+            recent_roms: HashMap::new(),
         }
     }
 }
@@ -48,5 +52,53 @@ impl Config {
         let mut path = std::env::current_dir().unwrap_or_default();
         path.push("config.ron");
         path
+    }
+
+    /// Add a ROM path to the recent list for a system, deduplicating and capping at 5.
+    /// `system_id` should be: "NES", "Apple2", "C64", "Atari2600".
+    pub fn push_recent_rom(&mut self, system_id: &str, path: &str) {
+        let list = self.recent_roms.entry(system_id.to_string()).or_default();
+        list.retain(|p| p != path);
+        list.insert(0, path.to_string());
+        list.truncate(5);
+    }
+
+    /// Get recent ROMs for a system (most-recent first), or empty slice.
+    pub fn recent_roms_for(&self, system_id: &str) -> &[String] {
+        self.recent_roms.get(system_id).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_recent_rom_deduplicates_and_caps_at_5() {
+        let mut cfg = Config::default();
+        for i in 0..6 {
+            cfg.push_recent_rom("NES", &format!("/roms/game{}.nes", i));
+        }
+        let recent = cfg.recent_roms_for("NES");
+        assert_eq!(recent.len(), 5);
+        assert_eq!(recent[0], "/roms/game5.nes");
+        assert!(!recent.contains(&"/roms/game0.nes".to_string()));
+    }
+
+    #[test]
+    fn push_recent_rom_moves_duplicate_to_front() {
+        let mut cfg = Config::default();
+        cfg.push_recent_rom("NES", "/roms/a.nes");
+        cfg.push_recent_rom("NES", "/roms/b.nes");
+        cfg.push_recent_rom("NES", "/roms/a.nes");
+        let recent = cfg.recent_roms_for("NES");
+        assert_eq!(recent[0], "/roms/a.nes");
+        assert_eq!(recent.len(), 2);
+    }
+
+    #[test]
+    fn recent_roms_for_unknown_system_returns_empty() {
+        let cfg = Config::default();
+        assert_eq!(cfg.recent_roms_for("Unknown"), &[] as &[String]);
     }
 }
