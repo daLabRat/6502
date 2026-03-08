@@ -14,7 +14,7 @@ pub struct Pulse {
     duty_pos: u8,
 
     // Timer
-    timer_period: u16,
+    pub(crate) timer_period: u16,
     timer_counter: u16,
 
     // Length counter

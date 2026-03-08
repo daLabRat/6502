@@ -1,4 +1,4 @@
-use emu_common::{AudioSample, Bus, Button, CpuDebugState, FrameBuffer, InputEvent, SystemEmulator};
+use emu_common::{AudioSample, Bus, Button, CpuDebugState, DebugSection, FrameBuffer, InputEvent, SystemEmulator};
 use emu_cpu::Cpu6502;
 use crate::bus::NesBus;
 use crate::cartridge;
@@ -88,6 +88,77 @@ impl SystemEmulator for Nes {
         emu_cpu::disassemble_6502(|a| self.cpu.bus.peek(a), addr)
     }
     fn step_instruction(&mut self) { self.cpu.step(); }
+
+    fn system_debug_panels(&self) -> Vec<DebugSection> {
+        let apu  = &self.cpu.bus.apu;
+        let ppu  = &self.cpu.bus.ppu;
+        let cart = &self.cpu.bus.cartridge;
+
+        // PPU
+        let ppu_sec = DebugSection::new("PPU")
+            .row("Scanline", format!("{}", ppu.scanline))
+            .row("Cycle",    format!("{}", ppu.cycle))
+            .row("CTRL",     format!("${:02X}", ppu.ctrl))
+            .row("MASK",     format!("${:02X}", ppu.mask))
+            .row("V addr",   format!("${:04X}", ppu.v))
+            .row("Sprites",  format!("{} active", {
+                (0..64usize).filter(|i| ppu.oam[i * 4] < 0xEF).count()
+            }));
+
+        // OAM
+        let mut oam_sec = DebugSection::new("OAM Sprites");
+        for i in 0..64usize {
+            let y    = ppu.oam[i * 4];
+            let tile = ppu.oam[i * 4 + 1];
+            let attr = ppu.oam[i * 4 + 2];
+            let x    = ppu.oam[i * 4 + 3];
+            if y < 0xEF {
+                let flip = format!("{}{}",
+                    if attr & 0x40 != 0 { "H" } else { "" },
+                    if attr & 0x80 != 0 { "V" } else { "" },
+                );
+                oam_sec = oam_sec.row(
+                    format!("#{:02}", i),
+                    format!("({:3},{:3}) tile:{:02X} pal:{} flip:{}", x, y, tile, attr & 3, flip),
+                );
+            }
+        }
+
+        // APU
+        let apu_sec = DebugSection::new("APU")
+            .row("Pulse1",   format!("len={:3} period={:4} vol={}",
+                apu.pulse1.length_counter, apu.pulse1.timer_period, apu.pulse1.output()))
+            .row("Pulse2",   format!("len={:3} period={:4} vol={}",
+                apu.pulse2.length_counter, apu.pulse2.timer_period, apu.pulse2.output()))
+            .row("Triangle", format!("len={:3} period={:4}",
+                apu.triangle.length_counter, apu.triangle.timer_period))
+            .row("Noise",    format!("len={:3} period={:4} vol={}",
+                apu.noise.length_counter, apu.noise.timer_period, apu.noise.output()))
+            .row("DMC",      format!("remain={} level={} irq={}",
+                apu.dmc.bytes_remaining(), apu.dmc.output(), apu.dmc.irq_pending))
+            .row("Frame IRQ", format!("{}", apu.frame_irq_pending));
+
+        // Mapper + pattern table peek summary
+        let ctrl = ppu.ctrl;
+        let bg_half  = (ctrl >> 4) & 1;
+        let spr_half = (ctrl >> 3) & 1;
+        let mut chr_rows: Vec<(u8, String)> = Vec::new();
+        for half in [bg_half, spr_half] {
+            let base = (half as u16) * 0x1000;
+            // Sample first byte of each of the 256 tiles
+            let non_zero = (0..256u16)
+                .filter(|t| cart.mapper.ppu_peek(base + t * 16) != 0)
+                .count();
+            chr_rows.push((half, format!("{}/256 tiles non-zero", non_zero)));
+        }
+        let mapper_sec = DebugSection::new("Mapper")
+            .row("Mirroring",  format!("{:?}", cart.mapper.mirroring()))
+            .row("IRQ",        format!("{}", cart.mapper.irq_pending()))
+            .row("CHR BG",     chr_rows[0].1.clone())
+            .row("CHR SPR",    chr_rows[1].1.clone());
+
+        vec![ppu_sec, oam_sec, apu_sec, mapper_sec]
+    }
 
     fn supports_save_states(&self) -> bool { true }
 

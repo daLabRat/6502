@@ -17,7 +17,7 @@ pub struct Apu {
     frame_counter_mode: u8, // 0 = 4-step, 1 = 5-step
     frame_counter: u32,
     frame_irq_inhibit: bool,
-    frame_irq_pending: bool,
+    pub(crate) frame_irq_pending: bool,
 
     // Status
     enabled: [bool; 5],

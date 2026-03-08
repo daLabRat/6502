@@ -45,6 +45,10 @@ impl Mapper for Nrom {
         }
     }
 
+    fn ppu_peek(&self, addr: u16) -> u8 {
+        self.chr.get(addr as usize).copied().unwrap_or(0)
+    }
+
     fn mirroring(&self) -> Mirroring {
         self.mirroring
     }

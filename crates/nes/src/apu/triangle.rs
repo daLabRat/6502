@@ -8,7 +8,7 @@ static TRIANGLE_TABLE: [u8; 32] = [
 
 pub struct Triangle {
     // Timer
-    timer_period: u16,
+    pub(crate) timer_period: u16,
     timer_counter: u16,
 
     // Sequencer

@@ -161,6 +161,13 @@ impl super::Mapper for Namco163 {
         }
     }
 
+    fn ppu_peek(&self, addr: u16) -> u8 {
+        if addr >= 0x2000 { return 0; }
+        let bank_idx = (addr / 0x400) as usize;
+        let offset = (addr & 0x03FF) as usize;
+        self.read_chr(self.chr_banks[bank_idx], offset)
+    }
+
     fn mirroring(&self) -> super::super::Mirroring { self.mirroring }
 
     fn cpu_tick(&mut self) {

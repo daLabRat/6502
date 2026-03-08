@@ -37,6 +37,9 @@ pub trait Mapper: Send {
     fn irq_pending(&self) -> bool { false }
     /// Acknowledge/clear the IRQ.
     fn irq_clear(&mut self) {}
+    /// Side-effect-free PPU address read for debugger (pattern table viewer).
+    /// Default returns 0; override in mappers without latch side effects.
+    fn ppu_peek(&self, addr: u16) -> u8 { let _ = addr; 0 }
     /// Serialize mapper-specific bank register state (for save states).
     /// Default: return empty vec (ROM-only mappers like NROM have no state).
     fn mapper_state(&self) -> Vec<u8> { vec![] }

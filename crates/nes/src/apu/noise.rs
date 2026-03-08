@@ -7,7 +7,7 @@ static NOISE_PERIOD_TABLE: [u16; 16] = [
 
 pub struct Noise {
     // Timer
-    timer_period: u16,
+    pub(crate) timer_period: u16,
     timer_counter: u16,
 
     // Shift register

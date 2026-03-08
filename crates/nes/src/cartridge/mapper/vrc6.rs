@@ -159,6 +159,18 @@ impl super::Mapper for Vrc6 {
         }
     }
 
+    fn ppu_peek(&self, addr: u16) -> u8 {
+        if addr >= 0x2000 { return 0; }
+        let bank = (addr / 0x0400) as usize;
+        let offset = (addr & 0x03FF) as usize;
+        let chr_bank = self.chr_banks[bank] as usize;
+        if !self.chr_rom.is_empty() {
+            self.chr_rom[(chr_bank * 0x400 + offset) % self.chr_rom.len()]
+        } else {
+            self.chr_ram[(chr_bank * 0x400 + offset) % self.chr_ram.len()]
+        }
+    }
+
     fn mirroring(&self) -> super::super::Mirroring { self.mirroring }
 
     fn cpu_tick(&mut self) {
