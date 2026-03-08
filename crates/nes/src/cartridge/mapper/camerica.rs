@@ -71,4 +71,23 @@ impl Mapper for Camerica {
     fn mirroring(&self) -> Mirroring {
         self.mirroring
     }
+
+    fn mapper_state(&self) -> Vec<u8> {
+        let mir = match self.mirroring {
+            Mirroring::SingleScreenHigh => 1u8,
+            _ => 0u8,
+        };
+        vec![self.prg_bank as u8, mir]
+    }
+
+    fn restore_mapper_state(&mut self, data: &[u8]) {
+        if data.len() >= 2 {
+            self.prg_bank = data[0] as usize;
+            self.mirroring = if data[1] != 0 {
+                Mirroring::SingleScreenHigh
+            } else {
+                Mirroring::SingleScreenLow
+            };
+        }
+    }
 }

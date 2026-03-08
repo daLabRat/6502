@@ -87,4 +87,32 @@ impl SystemEmulator for Nes {
         emu_cpu::disassemble_6502(|a| self.cpu.bus.peek(a), addr)
     }
     fn step_instruction(&mut self) { self.cpu.step(); }
+
+    fn supports_save_states(&self) -> bool { true }
+
+    fn save_state(&self) -> Result<Vec<u8>, String> {
+        let snap = crate::snapshot::NesSnapshot {
+            cpu:          self.cpu.snapshot(),
+            ram:          self.cpu.bus.ram.to_vec(),
+            ppu:          self.cpu.bus.ppu.snapshot(),
+            apu:          self.cpu.bus.apu.snapshot(),
+            mapper_state: self.cpu.bus.cartridge.mapper.mapper_state(),
+        };
+        let bytes = bincode::serde::encode_to_vec(&snap, bincode::config::standard())
+            .map_err(|e| e.to_string())?;
+        Ok(emu_common::save_encode("NES", &bytes))
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> Result<(), String> {
+        let payload = emu_common::save_decode("NES", data)?;
+        let (snap, _): (crate::snapshot::NesSnapshot, _) =
+            bincode::serde::decode_from_slice(payload, bincode::config::standard())
+                .map_err(|e| e.to_string())?;
+        self.cpu.restore(&snap.cpu);
+        self.cpu.bus.ram.copy_from_slice(&snap.ram);
+        self.cpu.bus.ppu.restore(&snap.ppu);
+        self.cpu.bus.apu.restore(&snap.apu);
+        self.cpu.bus.cartridge.mapper.restore_mapper_state(&snap.mapper_state);
+        Ok(())
+    }
 }

@@ -100,6 +100,38 @@ impl Noise {
         }
     }
 
+    pub fn snapshot(&self) -> crate::snapshot::NoiseSnapshot {
+        crate::snapshot::NoiseSnapshot {
+            timer_period: self.timer_period,
+            timer_counter: self.timer_counter,
+            shift: self.shift,
+            mode: self.mode,
+            length_counter: self.length_counter,
+            length_halt: self.length_halt,
+            envelope_start: self.envelope_start,
+            envelope_loop: self.envelope_loop,
+            constant_volume: self.constant_volume,
+            envelope_period: self.envelope_period,
+            envelope_counter: self.envelope_counter,
+            envelope_decay: self.envelope_decay,
+        }
+    }
+
+    pub fn restore(&mut self, s: &crate::snapshot::NoiseSnapshot) {
+        self.timer_period = s.timer_period;
+        self.timer_counter = s.timer_counter;
+        self.shift = s.shift;
+        self.mode = s.mode;
+        self.length_counter = s.length_counter;
+        self.length_halt = s.length_halt;
+        self.envelope_start = s.envelope_start;
+        self.envelope_loop = s.envelope_loop;
+        self.constant_volume = s.constant_volume;
+        self.envelope_period = s.envelope_period;
+        self.envelope_counter = s.envelope_counter;
+        self.envelope_decay = s.envelope_decay;
+    }
+
     pub fn output(&self) -> u8 {
         if self.length_counter == 0 || self.shift & 1 != 0 {
             return 0;

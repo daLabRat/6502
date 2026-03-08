@@ -87,6 +87,32 @@ impl Triangle {
         }
     }
 
+    pub fn snapshot(&self) -> crate::snapshot::TriangleSnapshot {
+        crate::snapshot::TriangleSnapshot {
+            timer_period: self.timer_period,
+            timer_counter: self.timer_counter,
+            sequence_pos: self.sequence_pos,
+            length_counter: self.length_counter,
+            length_halt: self.length_halt,
+            linear_counter: self.linear_counter,
+            linear_reload_value: self.linear_reload_value,
+            linear_reload_flag: self.linear_reload_flag,
+            control_flag: self.control_flag,
+        }
+    }
+
+    pub fn restore(&mut self, s: &crate::snapshot::TriangleSnapshot) {
+        self.timer_period = s.timer_period;
+        self.timer_counter = s.timer_counter;
+        self.sequence_pos = s.sequence_pos;
+        self.length_counter = s.length_counter;
+        self.length_halt = s.length_halt;
+        self.linear_counter = s.linear_counter;
+        self.linear_reload_value = s.linear_reload_value;
+        self.linear_reload_flag = s.linear_reload_flag;
+        self.control_flag = s.control_flag;
+    }
+
     pub fn output(&self) -> u8 {
         if self.length_counter == 0 || self.linear_counter == 0 {
             return 0;

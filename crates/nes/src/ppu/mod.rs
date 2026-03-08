@@ -279,6 +279,56 @@ impl Ppu {
         }
     }
 
+    /// Take a snapshot of all PPU state.
+    pub fn snapshot(&self) -> crate::snapshot::PpuSnapshot {
+        crate::snapshot::PpuSnapshot {
+            nametable_ram: self.nametable_ram.to_vec(),
+            palette_ram: self.palette_ram,
+            oam: self.oam.to_vec(),
+            ctrl: self.ctrl,
+            mask: self.mask,
+            status: self.status,
+            oam_addr: self.oam_addr,
+            v: self.v,
+            t: self.t,
+            fine_x: self.fine_x,
+            w: self.w,
+            data_buffer: self.data_buffer,
+            scanline: self.scanline,
+            cycle: self.cycle,
+            frame_count: self.frame_count,
+            nmi_pending: self.nmi_pending,
+        }
+    }
+
+    /// Restore PPU state from a snapshot.
+    pub fn restore(&mut self, s: &crate::snapshot::PpuSnapshot) {
+        self.nametable_ram.copy_from_slice(&s.nametable_ram);
+        self.palette_ram = s.palette_ram;
+        self.oam.copy_from_slice(&s.oam);
+        self.ctrl = s.ctrl;
+        self.mask = s.mask;
+        self.status = s.status;
+        self.oam_addr = s.oam_addr;
+        self.v = s.v;
+        self.t = s.t;
+        self.fine_x = s.fine_x;
+        self.w = s.w;
+        self.data_buffer = s.data_buffer;
+        self.scanline = s.scanline;
+        self.cycle = s.cycle;
+        self.frame_count = s.frame_count;
+        self.nmi_pending = s.nmi_pending;
+        // Scanline rendering buffers are transient — cleared to zero on restore.
+        self.bg_pixel_buffer = [0; 272];
+        self.bg_palette_buffer = [0; 272];
+        self.sprite_pixel_buffer = [0; 256];
+        self.sprite_palette_buffer = [0; 256];
+        self.sprite_priority_buffer = [false; 256];
+        self.sprite_zero_buffer = [false; 256];
+        self.frame_ready = false;
+    }
+
     /// Check if rendering is enabled.
     fn rendering_enabled(&self) -> bool {
         self.mask & 0x18 != 0

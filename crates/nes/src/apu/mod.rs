@@ -233,6 +233,36 @@ impl Apu {
     pub fn irq_pending(&self) -> bool {
         self.frame_irq_pending || self.dmc.irq_pending
     }
+
+    /// Take a snapshot of all APU state.
+    pub fn snapshot(&self) -> crate::snapshot::ApuSnapshot {
+        crate::snapshot::ApuSnapshot {
+            pulse1: self.pulse1.snapshot(),
+            pulse2: self.pulse2.snapshot(),
+            triangle: self.triangle.snapshot(),
+            noise: self.noise.snapshot(),
+            dmc: self.dmc.snapshot(),
+            frame_counter_mode: self.frame_counter_mode,
+            frame_counter: self.frame_counter,
+            frame_irq_inhibit: self.frame_irq_inhibit,
+            frame_irq_pending: self.frame_irq_pending,
+            enabled: self.enabled,
+        }
+    }
+
+    /// Restore APU state from a snapshot.
+    pub fn restore(&mut self, s: &crate::snapshot::ApuSnapshot) {
+        self.pulse1.restore(&s.pulse1);
+        self.pulse2.restore(&s.pulse2);
+        self.triangle.restore(&s.triangle);
+        self.noise.restore(&s.noise);
+        self.dmc.restore(&s.dmc);
+        self.frame_counter_mode = s.frame_counter_mode;
+        self.frame_counter = s.frame_counter;
+        self.frame_irq_inhibit = s.frame_irq_inhibit;
+        self.frame_irq_pending = s.frame_irq_pending;
+        self.enabled = s.enabled;
+    }
 }
 
 /// Length counter lookup table.

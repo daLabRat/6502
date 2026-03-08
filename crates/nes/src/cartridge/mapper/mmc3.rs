@@ -223,4 +223,38 @@ impl Mapper for Mmc3 {
     fn irq_clear(&mut self) {
         self.irq_pending = false;
     }
+
+    fn mapper_state(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(16);
+        data.push(self.bank_select);
+        data.extend_from_slice(&self.bank_regs);
+        data.push(self.irq_counter);
+        data.push(self.irq_latch);
+        data.push(self.irq_reload as u8);
+        data.push(self.irq_enabled as u8);
+        data.push(self.irq_pending as u8);
+        // Mirroring: 0=Vertical, 1=Horizontal
+        data.push(match self.mirroring {
+            Mirroring::Horizontal => 1,
+            _ => 0,
+        });
+        data
+    }
+
+    fn restore_mapper_state(&mut self, data: &[u8]) {
+        if data.len() >= 16 {
+            self.bank_select = data[0];
+            self.bank_regs.copy_from_slice(&data[1..9]);
+            self.irq_counter = data[9];
+            self.irq_latch = data[10];
+            self.irq_reload = data[11] != 0;
+            self.irq_enabled = data[12] != 0;
+            self.irq_pending = data[13] != 0;
+            self.mirroring = if data[14] != 0 {
+                Mirroring::Horizontal
+            } else {
+                Mirroring::Vertical
+            };
+        }
+    }
 }

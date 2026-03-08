@@ -172,4 +172,58 @@ impl Mapper for Fme7 {
     fn irq_clear(&mut self) {
         self.irq_pending = false;
     }
+
+    fn mapper_state(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(20);
+        data.push(self.command);
+        // chr_banks: 8 bytes
+        for &b in &self.chr_banks {
+            data.push(b as u8);
+        }
+        data.push(self.prg_bank_6000);
+        // prg_banks: 3 bytes
+        for &b in &self.prg_banks {
+            data.push(b as u8);
+        }
+        // mirroring: 0=Vertical, 1=Horizontal, 2=SingleScreenLow, 3=SingleScreenHigh
+        let mir = match self.mirroring {
+            Mirroring::Vertical => 0u8,
+            Mirroring::Horizontal => 1u8,
+            Mirroring::SingleScreenLow => 2u8,
+            Mirroring::SingleScreenHigh => 3u8,
+            _ => 0u8,
+        };
+        data.push(mir);
+        // IRQ state
+        data.push((self.irq_counter & 0xFF) as u8);
+        data.push((self.irq_counter >> 8) as u8);
+        data.push(self.irq_enabled as u8);
+        data.push(self.irq_counter_enabled as u8);
+        data.push(self.irq_pending as u8);
+        data
+    }
+
+    fn restore_mapper_state(&mut self, data: &[u8]) {
+        if data.len() >= 20 {
+            self.command = data[0];
+            for i in 0..8 {
+                self.chr_banks[i] = data[1 + i] as usize;
+            }
+            self.prg_bank_6000 = data[9];
+            for i in 0..3 {
+                self.prg_banks[i] = data[10 + i] as usize;
+            }
+            self.mirroring = match data[13] {
+                0 => Mirroring::Vertical,
+                1 => Mirroring::Horizontal,
+                2 => Mirroring::SingleScreenLow,
+                3 => Mirroring::SingleScreenHigh,
+                _ => Mirroring::Vertical,
+            };
+            self.irq_counter = data[14] as u16 | ((data[15] as u16) << 8);
+            self.irq_enabled = data[16] != 0;
+            self.irq_counter_enabled = data[17] != 0;
+            self.irq_pending = data[18] != 0;
+        }
+    }
 }

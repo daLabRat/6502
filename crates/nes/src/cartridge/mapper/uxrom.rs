@@ -53,4 +53,14 @@ impl Mapper for UxRom {
     fn mirroring(&self) -> Mirroring {
         self.mirroring
     }
+
+    fn mapper_state(&self) -> Vec<u8> {
+        vec![self.prg_bank as u8]
+    }
+
+    fn restore_mapper_state(&mut self, data: &[u8]) {
+        if data.len() >= 1 {
+            self.prg_bank = data[0] as usize;
+        }
+    }
 }

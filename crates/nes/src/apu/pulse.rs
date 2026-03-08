@@ -147,6 +147,52 @@ impl Pulse {
         }
     }
 
+    pub fn snapshot(&self) -> crate::snapshot::PulseSnapshot {
+        crate::snapshot::PulseSnapshot {
+            duty: self.duty,
+            duty_pos: self.duty_pos,
+            timer_period: self.timer_period,
+            timer_counter: self.timer_counter,
+            length_counter: self.length_counter,
+            length_halt: self.length_halt,
+            envelope_start: self.envelope_start,
+            envelope_loop: self.envelope_loop,
+            constant_volume: self.constant_volume,
+            envelope_period: self.envelope_period,
+            envelope_counter: self.envelope_counter,
+            envelope_decay: self.envelope_decay,
+            sweep_enabled: self.sweep_enabled,
+            sweep_period: self.sweep_period,
+            sweep_negate: self.sweep_negate,
+            sweep_shift: self.sweep_shift,
+            sweep_counter: self.sweep_counter,
+            sweep_reload: self.sweep_reload,
+            is_pulse1: self.is_pulse1,
+        }
+    }
+
+    pub fn restore(&mut self, s: &crate::snapshot::PulseSnapshot) {
+        self.duty = s.duty;
+        self.duty_pos = s.duty_pos;
+        self.timer_period = s.timer_period;
+        self.timer_counter = s.timer_counter;
+        self.length_counter = s.length_counter;
+        self.length_halt = s.length_halt;
+        self.envelope_start = s.envelope_start;
+        self.envelope_loop = s.envelope_loop;
+        self.constant_volume = s.constant_volume;
+        self.envelope_period = s.envelope_period;
+        self.envelope_counter = s.envelope_counter;
+        self.envelope_decay = s.envelope_decay;
+        self.sweep_enabled = s.sweep_enabled;
+        self.sweep_period = s.sweep_period;
+        self.sweep_negate = s.sweep_negate;
+        self.sweep_shift = s.sweep_shift;
+        self.sweep_counter = s.sweep_counter;
+        self.sweep_reload = s.sweep_reload;
+        self.is_pulse1 = s.is_pulse1;
+    }
+
     pub fn output(&self) -> u8 {
         if self.length_counter == 0 {
             return 0;

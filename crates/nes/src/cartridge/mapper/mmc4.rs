@@ -116,4 +116,38 @@ impl Mapper for Mmc4 {
     fn mirroring(&self) -> Mirroring {
         self.mirroring
     }
+
+    fn mapper_state(&self) -> Vec<u8> {
+        let mir = match self.mirroring {
+            Mirroring::Horizontal => 1u8,
+            _ => 0u8,
+        };
+        vec![
+            self.prg_bank as u8,
+            self.chr_fd_left as u8,
+            self.chr_fe_left as u8,
+            self.chr_fd_right as u8,
+            self.chr_fe_right as u8,
+            self.latch_left as u8,
+            self.latch_right as u8,
+            mir,
+        ]
+    }
+
+    fn restore_mapper_state(&mut self, data: &[u8]) {
+        if data.len() >= 8 {
+            self.prg_bank = data[0] as usize;
+            self.chr_fd_left = data[1] as usize;
+            self.chr_fe_left = data[2] as usize;
+            self.chr_fd_right = data[3] as usize;
+            self.chr_fe_right = data[4] as usize;
+            self.latch_left = data[5] != 0;
+            self.latch_right = data[6] != 0;
+            self.mirroring = if data[7] != 0 {
+                Mirroring::Horizontal
+            } else {
+                Mirroring::Vertical
+            };
+        }
+    }
 }

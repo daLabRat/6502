@@ -171,4 +171,41 @@ impl Dmc {
     pub fn bytes_remaining(&self) -> u16 {
         self.bytes_remaining
     }
+
+    pub fn snapshot(&self) -> crate::snapshot::DmcSnapshot {
+        crate::snapshot::DmcSnapshot {
+            timer_period: self.timer_period,
+            timer_counter: self.timer_counter,
+            output_level: self.output_level,
+            sample_addr: self.sample_addr,
+            sample_length: self.sample_length,
+            current_addr: self.current_addr,
+            bytes_remaining: self.bytes_remaining,
+            shift_register: self.shift_register,
+            bits_remaining: self.bits_remaining,
+            sample_buffer: self.sample_buffer,
+            silence_flag: self.silence_flag,
+            irq_enabled: self.irq_enabled,
+            loop_flag: self.loop_flag,
+            irq_pending: self.irq_pending,
+        }
+    }
+
+    pub fn restore(&mut self, s: &crate::snapshot::DmcSnapshot) {
+        self.timer_period = s.timer_period;
+        self.timer_counter = s.timer_counter;
+        self.output_level = s.output_level;
+        self.sample_addr = s.sample_addr;
+        self.sample_length = s.sample_length;
+        self.current_addr = s.current_addr;
+        self.bytes_remaining = s.bytes_remaining;
+        self.shift_register = s.shift_register;
+        self.bits_remaining = s.bits_remaining;
+        self.sample_buffer = s.sample_buffer;
+        self.silence_flag = s.silence_flag;
+        self.irq_enabled = s.irq_enabled;
+        self.loop_flag = s.loop_flag;
+        self.irq_pending = s.irq_pending;
+        self.dma_request = None;
+    }
 }

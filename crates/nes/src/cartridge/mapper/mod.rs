@@ -35,6 +35,11 @@ pub trait Mapper: Send {
     fn irq_pending(&self) -> bool { false }
     /// Acknowledge/clear the IRQ.
     fn irq_clear(&mut self) {}
+    /// Serialize mapper-specific bank register state (for save states).
+    /// Default: return empty vec (ROM-only mappers like NROM have no state).
+    fn mapper_state(&self) -> Vec<u8> { vec![] }
+    /// Restore mapper state from bytes previously returned by `mapper_state`.
+    fn restore_mapper_state(&mut self, data: &[u8]) { let _ = data; }
 }
 
 /// Create a mapper by ID.
