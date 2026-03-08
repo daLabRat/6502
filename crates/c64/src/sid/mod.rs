@@ -1,4 +1,5 @@
 use emu_common::AudioSample;
+use crate::snapshot::{SidSnapshot, VoiceSnapshot};
 
 /// SID (Sound Interface Device) - 3-voice synthesizer.
 /// Implements oscillators with combined waveforms, ring modulation,
@@ -351,6 +352,76 @@ impl Sid {
         let fs = 985248.0; // PAL clock
         let w = (std::f32::consts::PI * freq / fs).sin() * 2.0;
         w.clamp(0.0, 0.9)
+    }
+
+    pub fn snapshot(&self) -> SidSnapshot {
+        let vs = |v: &Voice| VoiceSnapshot {
+            frequency: v.frequency,
+            pulse_width: v.pulse_width,
+            control: v.control,
+            attack: v.attack,
+            decay: v.decay,
+            sustain: v.sustain,
+            release: v.release,
+            gate: v.gate,
+            accumulator: v.accumulator,
+            prev_msb: v.prev_msb,
+            noise_lfsr: v.noise_lfsr,
+            envelope: v.envelope,
+            envelope_state: match v.envelope_state {
+                EnvelopeState::Attack  => 0,
+                EnvelopeState::Decay   => 1,
+                EnvelopeState::Sustain => 2,
+                EnvelopeState::Release => 3,
+            },
+            envelope_counter: v.envelope_counter,
+        };
+        SidSnapshot {
+            voices: [vs(&self.voices[0]), vs(&self.voices[1]), vs(&self.voices[2])],
+            filter_cutoff: self.filter_cutoff,
+            filter_resonance: self.filter_resonance,
+            filter_mode: self.filter_mode,
+            filter_routing: self.filter_routing,
+            voice3_off: self.voice3_off,
+            volume: self.volume,
+            filter_bp: self.filter_bp,
+            filter_lp: self.filter_lp,
+        }
+    }
+
+    pub fn restore(&mut self, s: &SidSnapshot) {
+        let rv = |v: &mut Voice, sv: &VoiceSnapshot| {
+            v.frequency = sv.frequency;
+            v.pulse_width = sv.pulse_width;
+            v.control = sv.control;
+            v.attack = sv.attack;
+            v.decay = sv.decay;
+            v.sustain = sv.sustain;
+            v.release = sv.release;
+            v.gate = sv.gate;
+            v.accumulator = sv.accumulator;
+            v.prev_msb = sv.prev_msb;
+            v.noise_lfsr = sv.noise_lfsr;
+            v.envelope = sv.envelope;
+            v.envelope_state = match sv.envelope_state {
+                0 => EnvelopeState::Attack,
+                1 => EnvelopeState::Decay,
+                2 => EnvelopeState::Sustain,
+                _ => EnvelopeState::Release,
+            };
+            v.envelope_counter = sv.envelope_counter;
+        };
+        rv(&mut self.voices[0], &s.voices[0]);
+        rv(&mut self.voices[1], &s.voices[1]);
+        rv(&mut self.voices[2], &s.voices[2]);
+        self.filter_cutoff = s.filter_cutoff;
+        self.filter_resonance = s.filter_resonance;
+        self.filter_mode = s.filter_mode;
+        self.filter_routing = s.filter_routing;
+        self.voice3_off = s.voice3_off;
+        self.volume = s.volume;
+        self.filter_bp = s.filter_bp;
+        self.filter_lp = s.filter_lp;
     }
 
     pub fn drain_samples(&mut self, out: &mut [AudioSample]) -> usize {

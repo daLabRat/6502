@@ -1,4 +1,5 @@
 use emu_common::FrameBuffer;
+use crate::snapshot::VicSnapshot;
 
 /// VIC-II display dimensions (PAL).
 pub const DISPLAY_WIDTH: u32 = 320;
@@ -458,6 +459,35 @@ impl VicII {
                 self.sprite_sprite_collision |= mask as u8;
             }
         }
+    }
+
+    pub fn snapshot(&self) -> VicSnapshot {
+        VicSnapshot {
+            registers: self.registers.to_vec(),
+            raster_line: self.raster_line,
+            raster_irq_line: self.raster_irq_line,
+            cycle: self.cycle,
+            irq_pending: self.irq_pending,
+            color_ram: self.color_ram.to_vec(),
+            vic_bank_base: self.vic_bank_base,
+            sprite_sprite_collision: self.sprite_sprite_collision,
+            sprite_bg_collision: self.sprite_bg_collision,
+            stall_cycles: self.stall_cycles,
+        }
+    }
+
+    pub fn restore(&mut self, s: &VicSnapshot) {
+        self.registers.copy_from_slice(&s.registers);
+        self.raster_line = s.raster_line;
+        self.raster_irq_line = s.raster_irq_line;
+        self.cycle = s.cycle;
+        self.irq_pending = s.irq_pending;
+        self.color_ram.copy_from_slice(&s.color_ram);
+        self.vic_bank_base = s.vic_bank_base;
+        self.sprite_sprite_collision = s.sprite_sprite_collision;
+        self.sprite_bg_collision = s.sprite_bg_collision;
+        self.stall_cycles = s.stall_cycles;
+        self.frame_ready = false;
     }
 
     /// Plot a single sprite pixel, handling priority and collision.

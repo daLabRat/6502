@@ -1,3 +1,5 @@
+use crate::snapshot::CiaSnapshot;
+
 /// CIA (Complex Interface Adapter) chip.
 /// CIA1: Keyboard matrix scanning, joystick, timer A/B → IRQ.
 /// CIA2: VIC-II bank selection, serial bus, timer A/B → NMI.
@@ -214,6 +216,50 @@ impl Cia {
     /// Release a joystick port 2 direction/fire.
     pub fn joy2_up(&mut self, bit: u8) {
         self.joy2 |= 1 << bit;
+    }
+
+    pub fn snapshot(&self) -> CiaSnapshot {
+        CiaSnapshot {
+            pra: self.pra,
+            prb: self.prb,
+            ddra: self.ddra,
+            ddrb: self.ddrb,
+            timer_a_latch: self.timer_a_latch,
+            timer_a_counter: self.timer_a_counter,
+            timer_a_running: self.timer_a_running,
+            timer_a_oneshot: self.timer_a_oneshot,
+            timer_b_latch: self.timer_b_latch,
+            timer_b_counter: self.timer_b_counter,
+            timer_b_running: self.timer_b_running,
+            timer_b_oneshot: self.timer_b_oneshot,
+            icr_data: self.icr_data,
+            icr_mask: self.icr_mask,
+            irq_pending: self.irq_pending,
+            is_cia1: self.is_cia1,
+            keyboard_matrix: self.keyboard_matrix,
+            joy2: self.joy2,
+        }
+    }
+
+    pub fn restore(&mut self, s: &CiaSnapshot) {
+        self.pra = s.pra;
+        self.prb = s.prb;
+        self.ddra = s.ddra;
+        self.ddrb = s.ddrb;
+        self.timer_a_latch = s.timer_a_latch;
+        self.timer_a_counter = s.timer_a_counter;
+        self.timer_a_running = s.timer_a_running;
+        self.timer_a_oneshot = s.timer_a_oneshot;
+        self.timer_b_latch = s.timer_b_latch;
+        self.timer_b_counter = s.timer_b_counter;
+        self.timer_b_running = s.timer_b_running;
+        self.timer_b_oneshot = s.timer_b_oneshot;
+        self.icr_data = s.icr_data;
+        self.icr_mask = s.icr_mask;
+        self.irq_pending = s.irq_pending;
+        self.is_cia1 = s.is_cia1;
+        self.keyboard_matrix = s.keyboard_matrix;
+        self.joy2 = s.joy2;
     }
 
     // ── Debugger accessors ────────────────────────────────────────────────

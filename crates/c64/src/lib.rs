@@ -1,5 +1,6 @@
 pub mod bus;
 pub mod cia;
+mod snapshot;
 pub mod d64_image;
 pub mod drive1541;
 pub mod iec_bus;
@@ -403,6 +404,41 @@ fn shifted_ascii_to_matrix(key: u8) -> Option<(u8, u8)> {
 const LEFT_SHIFT: (u8, u8) = (1, 7);
 
 impl SystemEmulator for C64 {
+    fn supports_save_states(&self) -> bool { true }
+
+    fn save_state(&self) -> Result<Vec<u8>, String> {
+        let bus = &self.cpu.bus;
+        let snap = crate::snapshot::C64Snapshot {
+            cpu:          self.cpu.snapshot(),
+            ram:          bus.memory.ram.to_vec(),
+            cpu_port:     bus.memory.cpu_port,
+            cpu_port_dir: bus.memory.cpu_port_dir,
+            vic:          bus.vic.snapshot(),
+            sid:          bus.sid.snapshot(),
+            cia1:         bus.cia1.snapshot(),
+            cia2:         bus.cia2.snapshot(),
+        };
+        let bytes = bincode::serde::encode_to_vec(&snap, bincode::config::standard())
+            .map_err(|e| e.to_string())?;
+        Ok(emu_common::save_encode("C64", &bytes))
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> Result<(), String> {
+        let payload = emu_common::save_decode("C64", data)?;
+        let (snap, _): (crate::snapshot::C64Snapshot, _) =
+            bincode::serde::decode_from_slice(payload, bincode::config::standard())
+                .map_err(|e| e.to_string())?;
+        self.cpu.restore(&snap.cpu);
+        self.cpu.bus.memory.ram.copy_from_slice(&snap.ram);
+        self.cpu.bus.memory.cpu_port = snap.cpu_port;
+        self.cpu.bus.memory.cpu_port_dir = snap.cpu_port_dir;
+        self.cpu.bus.vic.restore(&snap.vic);
+        self.cpu.bus.sid.restore(&snap.sid);
+        self.cpu.bus.cia1.restore(&snap.cia1);
+        self.cpu.bus.cia2.restore(&snap.cia2);
+        Ok(())
+    }
+
     fn step_frame(&mut self) -> usize {
         // Count down IEC trace timer
         if self.iec_trace_frames > 0 {
