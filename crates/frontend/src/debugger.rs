@@ -1,18 +1,19 @@
-//! Debugger window — CPU registers, disassembler, memory hex viewer, system panels.
+//! Debugger — separate OS window via egui multi-viewport.
 
 use std::collections::HashSet;
 use egui::{Color32, FontId, RichText, Ui};
-use emu_common::SystemEmulator;
+use emu_common::{CpuDebugState, DebugSection, SystemEmulator};
+
+// ── State ────────────────────────────────────────────────────────────────────
 
 pub struct DebuggerState {
-    pub open:          bool,
-    pub paused:        bool,
-    pub step:          bool,   // consume in update loop
-    pub breakpoints:   HashSet<u16>,
-    pub mem_addr:      String, // hex address input for memory viewer
-    mem_page:          u16,
-    bp_input:          String,
-    active_tab:        Tab,
+    pub open:        bool,
+    pub paused:      bool,
+    pub step:        bool,      // consumed by the main update loop
+    pub breakpoints: HashSet<u16>,
+    pub mem_page:    u16,
+    bp_input:        String,
+    active_tab:      Tab,
 }
 
 #[derive(PartialEq)]
@@ -25,7 +26,6 @@ impl Default for DebuggerState {
             paused:      false,
             step:        false,
             breakpoints: HashSet::new(),
-            mem_addr:    "0000".into(),
             mem_page:    0,
             bp_input:    String::new(),
             active_tab:  Tab::Cpu,
@@ -34,7 +34,6 @@ impl Default for DebuggerState {
 }
 
 impl DebuggerState {
-    /// Check whether `pc` hits a breakpoint; if so, pause.
     pub fn check_breakpoint(&mut self, pc: u16) {
         if self.breakpoints.contains(&pc) {
             self.paused = true;
@@ -42,32 +41,68 @@ impl DebuggerState {
     }
 }
 
-/// Render the debugger as a floating egui window.
-pub fn render(ctx: &egui::Context, state: &mut DebuggerState, sys: &mut dyn SystemEmulator) {
-    if !state.open { return; }
+// ── Snapshot (read-only data extracted from the emulator each frame) ──────────
 
-    egui::Window::new("Debugger")
-        .default_size([740.0, 520.0])
-        .resizable(true)
-        .collapsible(false)
-        .show(ctx, |ui| {
-            render_controls(ui, state, sys);
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut state.active_tab, Tab::Cpu,    "CPU");
-                ui.selectable_value(&mut state.active_tab, Tab::Memory, "Memory");
-                ui.selectable_value(&mut state.active_tab, Tab::System, "System");
-            });
-            ui.separator();
-            match state.active_tab {
-                Tab::Cpu    => render_cpu_tab(ui, state, sys),
-                Tab::Memory => render_memory_tab(ui, state, sys),
-                Tab::System => render_system_tab(ui, sys),
-            }
-        });
+pub struct DebugSnapshot {
+    pub cpu:       CpuDebugState,
+    pub disasm:    Vec<(u16, String, bool)>,
+    pub mem_page:  u16,
+    pub mem_bytes: Box<[u8; 256]>,
+    pub panels:    Vec<DebugSection>,
 }
 
-fn render_controls(ui: &mut Ui, state: &mut DebuggerState, sys: &dyn SystemEmulator) {
+impl DebugSnapshot {
+    pub fn collect(sys: &dyn SystemEmulator, state: &DebuggerState) -> Self {
+        let cpu    = sys.cpu_state();
+        let disasm = disassemble_around(sys, cpu.pc, 8, 12);
+        let page   = state.mem_page;
+        let mem_bytes = Box::new(std::array::from_fn(|i| {
+            sys.peek_memory(page.wrapping_add(i as u16))
+        }));
+        let panels = sys.system_debug_panels();
+        Self { cpu, disasm, mem_page: page, mem_bytes, panels }
+    }
+}
+
+// ── Entry point called from app.rs ───────────────────────────────────────────
+
+/// Open the debugger in its own OS window.
+/// Call this AFTER extracting `snap` from the system (avoids borrow conflicts).
+pub fn show(ctx: &egui::Context, state: &mut DebuggerState, snap: &DebugSnapshot) {
+    ctx.show_viewport_immediate(
+        egui::ViewportId::from_hash_of("debugger"),
+        egui::ViewportBuilder::default()
+            .with_title("Debugger")
+            .with_inner_size([780.0, 540.0])
+            .with_min_inner_size([500.0, 300.0]),
+        |vp_ctx, _class| {
+            egui::CentralPanel::default().show(vp_ctx, |ui| {
+                render_controls(ui, state, snap);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut state.active_tab, Tab::Cpu,    "CPU");
+                    ui.selectable_value(&mut state.active_tab, Tab::Memory, "Memory");
+                    ui.selectable_value(&mut state.active_tab, Tab::System, "System");
+                });
+                ui.separator();
+                match state.active_tab {
+                    Tab::Cpu    => render_cpu_tab(ui, state, snap),
+                    Tab::Memory => render_memory_tab(ui, state, snap),
+                    Tab::System => render_system_tab(ui, snap),
+                }
+            });
+
+            // Close button on the OS window title bar
+            if vp_ctx.input(|i| i.viewport().close_requested()) {
+                state.open = false;
+            }
+        },
+    );
+}
+
+// ── Panels ───────────────────────────────────────────────────────────────────
+
+fn render_controls(ui: &mut Ui, state: &mut DebuggerState, snap: &DebugSnapshot) {
     ui.horizontal(|ui| {
         let label = if state.paused { "▶ Run" } else { "⏸ Pause" };
         if ui.button(label).clicked() {
@@ -79,7 +114,7 @@ fn render_controls(ui: &mut Ui, state: &mut DebuggerState, sys: &dyn SystemEmula
             }
         });
         ui.separator();
-        let cpu = sys.cpu_state();
+        let cpu = &snap.cpu;
         ui.label(RichText::new(format!(
             "PC:{:04X}  A:{:02X}  X:{:02X}  Y:{:02X}  SP:{:02X}  {}  cyc:{}",
             cpu.pc, cpu.a, cpu.x, cpu.y, cpu.sp,
@@ -89,10 +124,9 @@ fn render_controls(ui: &mut Ui, state: &mut DebuggerState, sys: &dyn SystemEmula
     });
 }
 
-fn render_cpu_tab(ui: &mut Ui, state: &mut DebuggerState, sys: &dyn SystemEmulator) {
-    let cpu = sys.cpu_state();
+fn render_cpu_tab(ui: &mut Ui, state: &mut DebuggerState, snap: &DebugSnapshot) {
+    let cpu = &snap.cpu;
 
-    // Registers
     egui::Grid::new("regs").num_columns(4).spacing([16.0, 2.0]).show(ui, |ui| {
         ui.label(mono("PC")); ui.label(mono(format!("{:04X}", cpu.pc)));
         ui.label(mono("SP")); ui.label(mono(format!("{:02X}",   cpu.sp)));
@@ -109,17 +143,13 @@ fn render_cpu_tab(ui: &mut Ui, state: &mut DebuggerState, sys: &dyn SystemEmulat
 
     ui.separator();
 
-    // Disassembler — walk backward by trying starts up to 24 bytes before PC,
-    // pick the sequence that lands exactly on PC.
-    let lines = disassemble_around(sys, cpu.pc, 8, 12);
     egui::ScrollArea::vertical()
         .id_salt("disasm")
         .max_height(220.0)
         .show(ui, |ui| {
-            for (addr, text, is_pc) in &lines {
+            for (addr, text, is_pc) in &snap.disasm {
                 let is_bp = state.breakpoints.contains(addr);
                 ui.horizontal(|ui| {
-                    // Breakpoint dot
                     let dot = if is_bp { "●" } else { " " };
                     if ui.label(RichText::new(dot).color(Color32::RED).font(FontId::monospace(12.0)))
                         .clicked()
@@ -127,11 +157,9 @@ fn render_cpu_tab(ui: &mut Ui, state: &mut DebuggerState, sys: &dyn SystemEmulat
                         if is_bp { state.breakpoints.remove(addr); }
                         else      { state.breakpoints.insert(*addr); }
                     }
-                    // Address
                     let addr_color = if *is_pc { Color32::YELLOW } else { Color32::GRAY };
                     ui.label(RichText::new(format!("{:04X}", addr))
                         .color(addr_color).font(FontId::monospace(12.0)));
-                    // Instruction
                     let text_color = if *is_pc { Color32::WHITE } else { Color32::LIGHT_GRAY };
                     ui.label(RichText::new(text).color(text_color).font(FontId::monospace(12.0)));
                 });
@@ -140,7 +168,6 @@ fn render_cpu_tab(ui: &mut Ui, state: &mut DebuggerState, sys: &dyn SystemEmulat
 
     ui.separator();
 
-    // Breakpoint add
     ui.horizontal(|ui| {
         ui.label("Add breakpoint:");
         let resp = ui.add(egui::TextEdit::singleline(&mut state.bp_input)
@@ -153,7 +180,6 @@ fn render_cpu_tab(ui: &mut Ui, state: &mut DebuggerState, sys: &dyn SystemEmulat
                 state.bp_input.clear();
             }
         }
-        // List active breakpoints
         let bps: Vec<u16> = { let mut v: Vec<_> = state.breakpoints.iter().copied().collect(); v.sort(); v };
         for bp in &bps {
             if ui.small_button(format!("{:04X} ✕", bp)).clicked() {
@@ -164,31 +190,30 @@ fn render_cpu_tab(ui: &mut Ui, state: &mut DebuggerState, sys: &dyn SystemEmulat
     });
 }
 
-fn render_memory_tab(ui: &mut Ui, state: &mut DebuggerState, sys: &dyn SystemEmulator) {
+fn render_memory_tab(ui: &mut Ui, state: &mut DebuggerState, snap: &DebugSnapshot) {
     ui.horizontal(|ui| {
         ui.label("Address:");
-        let resp = ui.add(egui::TextEdit::singleline(&mut state.mem_addr)
+        let resp = ui.add(egui::TextEdit::singleline(&mut state.bp_input) // reuse bp_input as addr field
             .desired_width(60.0).font(FontId::monospace(12.0)));
         if resp.changed() {
-            if let Ok(v) = u16::from_str_radix(state.mem_addr.trim(), 16) {
+            if let Ok(v) = u16::from_str_radix(state.bp_input.trim(), 16) {
                 state.mem_page = v & 0xFF00;
             }
         }
         if ui.button("◀").clicked() { state.mem_page = state.mem_page.saturating_sub(0x100); }
         if ui.button("▶").clicked() { state.mem_page = state.mem_page.saturating_add(0x100); }
-        ui.label(mono(format!("Page ${:04X}", state.mem_page)));
+        ui.label(mono(format!("Page ${:04X}", snap.mem_page)));
     });
 
     ui.separator();
 
-    egui::ScrollArea::vertical().id_salt("mem").max_height(380.0).show(ui, |ui| {
-        let base = state.mem_page;
+    egui::ScrollArea::vertical().id_salt("mem").max_height(400.0).show(ui, |ui| {
         for row in 0..16u16 {
-            let row_addr = base.wrapping_add(row * 16);
+            let row_addr = snap.mem_page.wrapping_add(row * 16);
             let mut line = format!("{:04X}  ", row_addr);
             let mut ascii = String::with_capacity(16);
-            for col in 0..16u16 {
-                let b = sys.peek_memory(row_addr.wrapping_add(col));
+            for col in 0..16usize {
+                let b = snap.mem_bytes[row as usize * 16 + col];
                 line.push_str(&format!("{:02X} ", b));
                 if col == 7 { line.push(' '); }
                 ascii.push(if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' });
@@ -200,14 +225,13 @@ fn render_memory_tab(ui: &mut Ui, state: &mut DebuggerState, sys: &dyn SystemEmu
     });
 }
 
-fn render_system_tab(ui: &mut Ui, sys: &dyn SystemEmulator) {
-    let panels = sys.system_debug_panels();
-    if panels.is_empty() {
+fn render_system_tab(ui: &mut Ui, snap: &DebugSnapshot) {
+    if snap.panels.is_empty() {
         ui.label("No system-specific debug info available.");
         return;
     }
     egui::ScrollArea::vertical().id_salt("sys").show(ui, |ui| {
-        for section in &panels {
+        for section in &snap.panels {
             ui.collapsing(&section.name, |ui| {
                 egui::Grid::new(&section.name).num_columns(2).spacing([16.0, 2.0]).show(ui, |ui| {
                     for (k, v) in &section.rows {
@@ -221,11 +245,8 @@ fn render_system_tab(ui: &mut Ui, sys: &dyn SystemEmulator) {
     });
 }
 
-fn mono(s: impl Into<String>) -> RichText {
-    RichText::new(s).font(FontId::monospace(12.0))
-}
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Walk forward from a start point, returning `before` + PC + `after` instructions.
 fn disassemble_around(sys: &dyn SystemEmulator, pc: u16, before: usize, after: usize) -> Vec<(u16, String, bool)> {
     let scan_back = (before * 3 + 3) as u16;
     let start = pc.saturating_sub(scan_back);
@@ -260,6 +281,10 @@ fn disassemble_around(sys: &dyn SystemEmulator, pc: u16, before: usize, after: u
         .iter()
         .map(|(a, t)| (*a, t.clone(), *a == pc))
         .collect()
+}
+
+fn mono(s: impl Into<String>) -> RichText {
+    RichText::new(s).font(FontId::monospace(12.0))
 }
 
 fn flags_str(p: u8) -> String {
