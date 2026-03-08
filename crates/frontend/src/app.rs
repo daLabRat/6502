@@ -27,6 +27,7 @@ pub struct EmuApp {
     audio_buffer: Vec<f32>,
     error_msg: Option<String>,
     last_frame_time: std::time::Instant,
+    frame_accum:     std::time::Duration,
     render_state: Option<Arc<eframe::egui_wgpu::RenderState>>,
     crt: Option<CrtPipeline>,
 }
@@ -51,6 +52,7 @@ impl EmuApp {
             audio_buffer: vec![0.0; 2048],
             error_msg: None,
             last_frame_time: std::time::Instant::now(),
+            frame_accum:     std::time::Duration::ZERO,
             render_state,
             crt: None,
         }
@@ -65,6 +67,8 @@ impl EmuApp {
         self.screen = Screen::Emulation;
         self.texture = None;
         self.error_msg = None;
+        self.last_frame_time = std::time::Instant::now();
+        self.frame_accum = std::time::Duration::ZERO;
 
         if let Some(ref rs) = self.render_state {
             if let Some(ref sys) = self.system {
@@ -276,8 +280,7 @@ impl eframe::App for EmuApp {
 
         // Top menu
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            let crt_label = self.config.crt_mode.label();
-            let action = menu::render_menu(ui, self.system.is_some(), crt_label);
+            let action = menu::render_menu(ui, self.system.is_some(), self.config.crt_mode);
             match action {
                 MenuAction::LoadRom => {
                     if let Some(system) = self.selected_system {
@@ -303,8 +306,8 @@ impl eframe::App for EmuApp {
                     self.system = None;
                     self.texture = None;
                 }
-                MenuAction::CycleCrtMode => {
-                    self.config.crt_mode = self.config.crt_mode.next();
+                MenuAction::SetCrtMode(mode) => {
+                    self.config.crt_mode = mode;
                     self.config.save();
                 }
                 MenuAction::None => {}
@@ -341,37 +344,47 @@ impl eframe::App for EmuApp {
                     if let Some(ref mut sys) = self.system {
                         let target = std::time::Duration::from_secs_f64(1.0 / sys.target_fps());
                         let now = std::time::Instant::now();
-                        if now.duration_since(self.last_frame_time) >= target {
-                            self.last_frame_time = now;
+                        self.frame_accum += now.duration_since(self.last_frame_time);
+                        self.last_frame_time = now;
+                        // Cap accumulator to avoid spiral-of-death if we fall behind.
+                        self.frame_accum = self.frame_accum.min(target * 4);
+                        while self.frame_accum >= target {
+                            self.frame_accum -= target;
                             sys.step_frame();
 
                             let count = sys.audio_samples(&mut self.audio_buffer);
                             if let Some(ref mut audio) = self.audio {
                                 audio.push_samples(&self.audio_buffer[..count], self.config.volume);
                             }
-
-                            let fb = sys.framebuffer();
-                            if let Some(ref crt) = self.crt {
-                                crt.upload(&fb.pixels);
-                                crt.apply(self.config.crt_mode);
-                            }
                         }
 
                         let fb = sys.framebuffer();
                         let aspect = sys.display_aspect_ratio() as f32;
-                        if let Some(ref crt) = self.crt {
-                            let available = ui.available_size();
-                            let (w, h) = if available.x / available.y > aspect {
-                                (available.y * aspect, available.y)
-                            } else {
-                                (available.x, available.x / aspect)
-                            };
-                            ui.centered_and_justified(|ui| {
-                                ui.image(egui::load::SizedTexture::new(
-                                    crt.texture_id,
-                                    egui::vec2(w, h),
+                        let crt_mode = self.config.crt_mode;
+
+                        use crate::crt::CrtMode;
+                        if crt_mode != CrtMode::Off {
+                            if let Some(ref crt) = self.crt {
+                                let available = ui.available_size();
+                                let (w, h) = if available.x / available.y > aspect {
+                                    (available.y * aspect, available.y)
+                                } else {
+                                    (available.x, available.x / aspect)
+                                };
+                                // Record CRT shader into eframe's encoder (no separate submit).
+                                let rect = ui.available_rect_before_wrap();
+                                ui.painter().add(egui::Shape::Callback(
+                                    crt.make_callback(fb.pixels.clone(), crt_mode, rect),
                                 ));
-                            });
+                                ui.centered_and_justified(|ui| {
+                                    ui.image(egui::load::SizedTexture::new(
+                                        crt.texture_id,
+                                        egui::vec2(w, h),
+                                    ));
+                                });
+                            } else {
+                                crate::screens::emulation::render(ui, &mut self.texture, fb, aspect);
+                            }
                         } else {
                             crate::screens::emulation::render(ui, &mut self.texture, fb, aspect);
                         }
@@ -380,10 +393,10 @@ impl eframe::App for EmuApp {
             }
         });
 
-        // Request repaint at target FPS during emulation
-        if let Some(ref sys) = self.system {
-            let fps = sys.target_fps();
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / fps));
+        // Keep repainting at vsync rate during emulation; the accumulator
+        // above controls how many step_frame calls happen per repaint.
+        if self.system.is_some() {
+            ctx.request_repaint();
         }
     }
 }

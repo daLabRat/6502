@@ -1,6 +1,7 @@
 //! CRT post-process pipeline.
 
 use std::sync::Arc;
+use eframe::egui;
 use eframe::egui_wgpu;
 use eframe::wgpu;
 use wgpu::util::DeviceExt;
@@ -8,28 +9,23 @@ use wgpu::util::DeviceExt;
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum CrtMode {
     #[default]
+    Off,
     Sharp,
     Scanlines,
     Crt,
 }
 
 impl CrtMode {
-    pub fn next(self) -> Self {
-        match self {
-            Self::Sharp     => Self::Scanlines,
-            Self::Scanlines => Self::Crt,
-            Self::Crt       => Self::Sharp,
-        }
-    }
     pub fn label(self) -> &'static str {
         match self {
+            Self::Off       => "Off",
             Self::Sharp     => "Sharp",
             Self::Scanlines => "Scanlines",
             Self::Crt       => "CRT",
         }
     }
     fn as_u32(self) -> u32 {
-        match self { Self::Sharp => 0, Self::Scanlines => 1, Self::Crt => 2 }
+        match self { Self::Off | Self::Sharp => 0, Self::Scanlines => 1, Self::Crt => 2 }
     }
 }
 
@@ -50,31 +46,110 @@ impl Uniforms {
             source_size:       [w as f32, h as f32],
             output_size:       [w as f32, h as f32],
             mode:              mode.as_u32(),
-            scanline_strength: 0.4,
-            barrel_k:          0.08,
+            scanline_strength: 0.5,
+            barrel_k:          0.04,
             bloom_amount:      0.12,
         }
     }
 }
 
-pub struct CrtPipeline {
-    device:             Arc<wgpu::Device>,
-    queue:              Arc<wgpu::Queue>,
+// All GPU-side resources shared via Arc so the paint callback can borrow them.
+struct CrtResources {
     pipeline:           wgpu::RenderPipeline,
     src_texture:        wgpu::Texture,
     src_bind_group:     wgpu::BindGroup,
     uniform_buffer:     wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     render_target_view: wgpu::TextureView,
-    pub texture_id:     egui::TextureId,
     width:              u32,
     height:             u32,
+}
+
+pub struct CrtPipeline {
+    inner:          Arc<CrtResources>,
+    pub texture_id: egui::TextureId,
+}
+
+// Per-frame callback that records the CRT render pass into eframe's encoder.
+// No separate queue.submit() — eframe submits everything in one batch.
+struct CrtCallback {
+    inner:  Arc<CrtResources>,
+    pixels: Vec<u8>,
+    mode:   CrtMode,
+}
+
+impl egui_wgpu::CallbackTrait for CrtCallback {
+    fn prepare(
+        &self,
+        _device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        encoder: &mut wgpu::CommandEncoder,
+        _resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let r = &*self.inner;
+
+        // Upload framebuffer pixels to source texture.
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture:   &r.src_texture,
+                mip_level: 0,
+                origin:    wgpu::Origin3d::ZERO,
+                aspect:    wgpu::TextureAspect::All,
+            },
+            &self.pixels,
+            wgpu::ImageDataLayout {
+                offset:         0,
+                bytes_per_row:  Some(4 * r.width),
+                rows_per_image: Some(r.height),
+            },
+            wgpu::Extent3d { width: r.width, height: r.height, depth_or_array_layers: 1 },
+        );
+
+        // Write uniforms.
+        queue.write_buffer(
+            &r.uniform_buffer, 0,
+            bytemuck::bytes_of(&Uniforms::new(r.width, r.height, self.mode)),
+        );
+
+        // Record CRT render pass into the shared eframe encoder (no extra submit).
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("crt_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view:           &r.render_target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load:  wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes:         None,
+                occlusion_query_set:      None,
+            });
+            pass.set_pipeline(&r.pipeline);
+            pass.set_bind_group(0, &r.src_bind_group, &[]);
+            pass.set_bind_group(1, &r.uniform_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+
+        vec![] // No separate command buffers needed.
+    }
+
+    fn paint(
+        &self,
+        _info: egui::PaintCallbackInfo,
+        _render_pass: &mut wgpu::RenderPass<'static>,
+        _resources: &egui_wgpu::CallbackResources,
+    ) {
+        // We render to our own texture; display happens via texture_id in ui.image().
+    }
 }
 
 impl CrtPipeline {
     pub fn new(rs: &egui_wgpu::RenderState, width: u32, height: u32) -> Self {
         let device = &rs.device;
-        let queue  = &rs.queue;
 
         let src_texture = device.create_texture(&wgpu::TextureDescriptor {
             label:           Some("crt_src"),
@@ -207,67 +282,26 @@ impl CrtPipeline {
             cache:         None,
         });
 
-        Self {
-            device: device.clone(),
-            queue:  queue.clone(),
+        let inner = Arc::new(CrtResources {
             pipeline,
             src_texture,
             src_bind_group,
             uniform_buffer,
             uniform_bind_group,
             render_target_view,
-            texture_id,
             width,
             height,
-        }
+        });
+
+        Self { inner, texture_id }
     }
 
-    /// Upload RGBA8 framebuffer pixels to the source texture.
-    pub fn upload(&self, pixels: &[u8]) {
-        self.queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture:   &self.src_texture,
-                mip_level: 0,
-                origin:    wgpu::Origin3d::ZERO,
-                aspect:    wgpu::TextureAspect::All,
-            },
-            pixels,
-            wgpu::ImageDataLayout {
-                offset:         0,
-                bytes_per_row:  Some(4 * self.width),
-                rows_per_image: Some(self.height),
-            },
-            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
-        );
-    }
-
-    /// Apply the CRT shader (source → render target). Submit immediately.
-    pub fn apply(&self, mode: CrtMode) {
-        self.queue.write_buffer(
-            &self.uniform_buffer, 0,
-            bytemuck::bytes_of(&Uniforms::new(self.width, self.height, mode)),
-        );
-        let mut enc = self.device.create_command_encoder(&Default::default());
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("crt_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view:           &self.render_target_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load:  wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes:         None,
-                occlusion_query_set:      None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.src_bind_group, &[]);
-            pass.set_bind_group(1, &self.uniform_bind_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        self.queue.submit(std::iter::once(enc.finish()));
+    /// Create a paint callback that uploads `pixels` and runs the CRT shader.
+    /// Add the returned value to `ui.painter()` before displaying `texture_id`.
+    pub fn make_callback(&self, pixels: Vec<u8>, mode: CrtMode, rect: egui::Rect) -> egui::PaintCallback {
+        egui_wgpu::Callback::new_paint_callback(
+            rect,
+            CrtCallback { inner: self.inner.clone(), pixels, mode },
+        )
     }
 }

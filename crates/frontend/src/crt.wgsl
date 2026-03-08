@@ -35,8 +35,11 @@ fn barrel(uv: vec2<f32>, k: f32) -> vec2<f32> {
 }
 
 fn scanline(uv_y: f32, src_h: f32, strength: f32) -> f32 {
-    let s = sin(uv_y * src_h * 3.14159265);
-    return 1.0 - strength * (1.0 - s * s);
+    // Darken every other output row. The render target is source-resolution,
+    // so fract() of the pixel centre is always 0.5 — useless. Instead key
+    // off the integer row index; egui upscales the result for display.
+    let row = u32(uv_y * src_h);
+    return select(1.0, 1.0 - strength, (row & 1u) == 0u);
 }
 
 fn aperture(uv_x: f32, src_w: f32) -> vec3<f32> {

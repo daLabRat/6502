@@ -1,4 +1,5 @@
 use egui::Ui;
+use crate::crt::CrtMode;
 
 /// Menu action returned by menu rendering.
 #[derive(Debug, PartialEq)]
@@ -9,11 +10,11 @@ pub enum MenuAction {
     Break,
     Quit,
     BackToSystemSelect,
-    CycleCrtMode,
+    SetCrtMode(CrtMode),
 }
 
 /// Render the menu bar. Returns the action requested, if any.
-pub fn render_menu(ui: &mut Ui, has_system: bool, crt_label: &str) -> MenuAction {
+pub fn render_menu(ui: &mut Ui, has_system: bool, crt_mode: CrtMode) -> MenuAction {
     let mut action = MenuAction::None;
 
     egui::menu::bar(ui, |ui| {
@@ -47,9 +48,11 @@ pub fn render_menu(ui: &mut Ui, has_system: bool, crt_label: &str) -> MenuAction
             });
 
             ui.menu_button("Display", |ui| {
-                if ui.button(format!("Mode: {} →", crt_label)).clicked() {
-                    action = MenuAction::CycleCrtMode;
-                    ui.close_menu();
+                for mode in [CrtMode::Off, CrtMode::Sharp, CrtMode::Scanlines, CrtMode::Crt] {
+                    if ui.selectable_label(crt_mode == mode, mode.label()).clicked() {
+                        action = MenuAction::SetCrtMode(mode);
+                        ui.close_menu();
+                    }
                 }
             });
         }
