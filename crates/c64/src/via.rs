@@ -26,7 +26,7 @@ pub struct Via {
     pub(crate) irb: u8,
 
     // Timer 1
-    t1_counter: u16,
+    pub(crate) t1_counter: u16,
     t1_latch: u16,
     t1_running: bool,
     t1_triggered: bool,   // Has T1 fired at least once?

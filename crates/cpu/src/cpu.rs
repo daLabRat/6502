@@ -81,6 +81,11 @@ impl<B: Bus> Cpu6502<B> {
             return 7;
         }
 
+        // Check SO (Set Overflow) pin — falling edge sets V flag (used by 1541 BYTE READY)
+        if self.bus.poll_so() {
+            self.p.insert(StatusFlags::OVERFLOW);
+        }
+
         let opcode_byte = self.fetch_byte();
         let opcode = &OPCODE_TABLE[opcode_byte as usize];
 

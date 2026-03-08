@@ -27,7 +27,7 @@ fn main() -> eframe::Result<()> {
     let log_file = std::fs::File::create("/tmp/emu.log").expect("Cannot create /tmp/emu.log");
     let log_file = std::sync::Mutex::new(log_file);
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,emu_c64::drive1541=debug"))
         .format(move |buf, record| {
             use std::fmt::Write as FmtWrite;
             let mut line = String::new();

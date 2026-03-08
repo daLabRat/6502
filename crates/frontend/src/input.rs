@@ -42,6 +42,13 @@ pub fn process_egui_input(ctx: &egui::Context) -> Vec<InputEvent> {
                                 port: 0,
                             });
                         }
+                    } else if let Some(fkey) = key_to_fkey(*key, modifiers.shift) {
+                        // Function keys F1–F8 → PETSCII codes ($85–$8C)
+                        events.push(InputEvent {
+                            button: Button::Key(fkey),
+                            pressed: *pressed,
+                            port: 0,
+                        });
                     } else if let Some(c) = key_to_ascii(*key) {
                         // Keyboard keys for Apple II / C64 (send both press and release)
                         events.push(InputEvent {
@@ -102,6 +109,23 @@ fn key_to_ctrl(key: Key) -> Option<u8> {
         Key::S => Some(0x13), Key::T => Some(0x14), Key::U => Some(0x15),
         Key::V => Some(0x16), Key::W => Some(0x17), Key::X => Some(0x18),
         Key::Y => Some(0x19), Key::Z => Some(0x1A),
+        _ => None,
+    }
+}
+
+/// Map function keys to PETSCII codes used by C64.
+/// Unshifted: F1=$85, F3=$86, F5=$87, F7=$88
+/// Shifted:   F2=$89, F4=$8A, F6=$8B, F8=$8C
+fn key_to_fkey(key: Key, shift: bool) -> Option<u8> {
+    match (key, shift) {
+        (Key::F1, false) => Some(0x85),
+        (Key::F1, true)  => Some(0x89),
+        (Key::F3, false) => Some(0x86),
+        (Key::F3, true)  => Some(0x8A),
+        (Key::F5, false) => Some(0x87),
+        (Key::F5, true)  => Some(0x8B),
+        (Key::F7, false) => Some(0x88),
+        (Key::F7, true)  => Some(0x8C),
         _ => None,
     }
 }

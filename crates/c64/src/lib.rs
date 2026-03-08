@@ -48,6 +48,9 @@ pub struct C64 {
     trace_last_drive_data: bool,
     trace_last_drive_clk: bool,
     trace_last_drive_pc: u16,
+    trace_last_c64_clk: bool,
+    trace_last_c64_data: bool,
+    trace_last_c64_pc: u16,
 }
 
 impl C64 {
@@ -81,6 +84,9 @@ impl C64 {
             trace_last_drive_data: false,
             trace_last_drive_clk: false,
             trace_last_drive_pc: 0,
+            trace_last_c64_clk: false,
+            trace_last_c64_data: false,
+            trace_last_c64_pc: 0,
         })
     }
 
@@ -107,6 +113,9 @@ impl C64 {
             trace_last_drive_data: false,
             trace_last_drive_clk: false,
             trace_last_drive_pc: 0,
+            trace_last_c64_clk: false,
+            trace_last_c64_data: false,
+            trace_last_c64_pc: 0,
         }
     }
 
@@ -177,13 +186,16 @@ impl C64 {
             trace_last_drive_data: false,
             trace_last_drive_clk: false,
             trace_last_drive_pc: 0,
+            trace_last_c64_clk: false,
+            trace_last_c64_data: false,
+            trace_last_c64_pc: 0,
         })
     }
 
-    /// Enable IEC trace logging for the next ~6 seconds (300 frames at 50fps).
+    /// Enable IEC trace logging for the next ~72 seconds (3600 frames at 50fps).
     pub fn enable_iec_trace(&mut self) {
-        self.iec_trace_frames = 300;
-        log::info!("[IEC] Trace enabled for 300 frames");
+        self.iec_trace_frames = 3600;
+        log::info!("[IEC] Trace enabled for 3600 frames");
     }
 
     /// Load system ROMs. Resets the CPU to boot with the new ROMs.
@@ -224,20 +236,40 @@ impl C64 {
 
         if tracing {
             let atn_now = self.iec_bus.c64_atn;
+            let c64_clk_now = self.iec_bus.c64_clk;
+            let c64_data_now = self.iec_bus.c64_data;
+            let c64_pc = self.cpu.pc;
+
             if atn_now != self.trace_last_atn {
                 self.trace_last_atn = atn_now;
-                let (orb, ddrb, ifr) = if let Some(ref dcpu) = self.drive_cpu {
-                    (dcpu.bus.via1.orb, dcpu.bus.via1.ddrb, dcpu.bus.via1.ifr)
-                } else {
-                    (0, 0, 0)
-                };
                 log::info!(
-                    "[IEC] ATN {} | CIA2 PA={:02X} DDRA={:02X} | bus clk={} data={} | drv VIA1 ORB={:02X} DDRB={:02X} IFR={:02X}",
-                    if atn_now { "ASSERTED" } else { "released" },
-                    self.cpu.bus.cia2.pra, self.cpu.bus.cia2.ddra,
+                    "[IEC] C64 ATN={} C64_PC={:04X} | bus clk={} data={} | CIA2 PA={:02X} DDRA={:02X}",
+                    atn_now as u8, c64_pc,
                     self.iec_bus.clk() as u8, self.iec_bus.data() as u8,
-                    orb, ddrb, ifr,
+                    self.cpu.bus.cia2.pra, self.cpu.bus.cia2.ddra,
                 );
+            }
+            if c64_clk_now != self.trace_last_c64_clk {
+                self.trace_last_c64_clk = c64_clk_now;
+                log::info!(
+                    "[IEC] C64 CLK={} C64_PC={:04X} bus_clk={} bus_data={}",
+                    c64_clk_now as u8, c64_pc,
+                    self.iec_bus.clk() as u8, self.iec_bus.data() as u8,
+                );
+            }
+            if c64_data_now != self.trace_last_c64_data {
+                self.trace_last_c64_data = c64_data_now;
+                log::info!(
+                    "[IEC] C64 DATA={} C64_PC={:04X} bus_clk={} bus_data={}",
+                    c64_data_now as u8, c64_pc,
+                    self.iec_bus.clk() as u8, self.iec_bus.data() as u8,
+                );
+            }
+            // Log C64 PC jumps (rough call tracking) when any IEC line is active
+            let iec_active = atn_now || c64_clk_now || c64_data_now
+                || self.iec_bus.drive_clk || self.iec_bus.drive_data;
+            if iec_active && c64_pc != self.trace_last_c64_pc {
+                self.trace_last_c64_pc = c64_pc;
             }
         }
 
@@ -245,27 +277,31 @@ impl C64 {
         if let Some(ref mut dcpu) = self.drive_cpu {
             dcpu.bus.sync_iec_input(&self.iec_bus);
 
-            if tracing && self.iec_bus.c64_atn {
-                let pc_now = dcpu.pc;
-                if pc_now != self.trace_last_drive_pc {
-                    self.trace_last_drive_pc = pc_now;
-                    log::info!("[IEC] Drive PC={:04X} (ATN active)", pc_now);
-                }
-            }
-
             // 1541 → IEC bus
             let drive_data_before = self.iec_bus.drive_data;
             let drive_clk_before = self.iec_bus.drive_clk;
             dcpu.bus.sync_iec_output(&mut self.iec_bus);
 
             if tracing {
+                let drv_pc = dcpu.pc;
                 if self.iec_bus.drive_data != drive_data_before || drive_data_before != self.trace_last_drive_data {
                     self.trace_last_drive_data = self.iec_bus.drive_data;
-                    log::info!("[IEC] Drive DATA={}", self.iec_bus.drive_data as u8);
+                    log::info!(
+                        "[IEC] DRV DATA={} DRV_PC={:04X} C64_PC={:04X} bus_clk={} bus_data={}",
+                        self.iec_bus.drive_data as u8, drv_pc, self.cpu.pc,
+                        self.iec_bus.clk() as u8, self.iec_bus.data() as u8,
+                    );
                 }
                 if self.iec_bus.drive_clk != drive_clk_before || drive_clk_before != self.trace_last_drive_clk {
                     self.trace_last_drive_clk = self.iec_bus.drive_clk;
-                    log::info!("[IEC] Drive CLK={}", self.iec_bus.drive_clk as u8);
+                    log::info!(
+                        "[IEC] DRV CLK={} DRV_PC={:04X} C64_PC={:04X} bus_clk={} bus_data={}",
+                        self.iec_bus.drive_clk as u8, drv_pc, self.cpu.pc,
+                        self.iec_bus.clk() as u8, self.iec_bus.data() as u8,
+                    );
+                }
+                if drv_pc != self.trace_last_drive_pc {
+                    self.trace_last_drive_pc = drv_pc;
                 }
             }
         }
@@ -329,6 +365,11 @@ fn ascii_to_matrix(key: u8) -> Option<(u8, u8)> {
         0x08 => Some((0, 0)), // Backspace → DEL
         0x14 => Some((0, 0)), // DEL (PETSCII)
         0x03 => Some((7, 7)), // Ctrl+C → RUN/STOP
+        // Function keys (PETSCII codes, unshifted)
+        0x85 => Some((0, 4)), // F1
+        0x86 => Some((0, 6)), // F3
+        0x87 => Some((0, 5)), // F5
+        0x88 => Some((0, 3)), // F7
         _ => None,
     }
 }
@@ -350,6 +391,11 @@ fn shifted_ascii_to_matrix(key: u8) -> Option<(u8, u8)> {
         b'>' => Some((5, 4)),
         b'[' => Some((5, 5)),
         b']' => Some((6, 2)),
+        // Shifted function keys (PETSCII codes) — shift auto-pressed by caller
+        0x89 => Some((0, 4)), // F2 = shift+F1
+        0x8A => Some((0, 6)), // F4 = shift+F3
+        0x8B => Some((0, 5)), // F6 = shift+F5
+        0x8C => Some((0, 3)), // F8 = shift+F7
         _ => None,
     }
 }
@@ -382,6 +428,10 @@ impl SystemEmulator for C64 {
             }
         });
 
+        // Heartbeat counter: log CPU state every ~50K steps when tracing
+        let mut heartbeat = 0u32;
+        const HEARTBEAT_INTERVAL: u32 = 50_000;
+
         loop {
             // Check KERNAL traps (only active when no 1541 drive CPU)
             if self.drive_cpu.is_none() && !self.kernal_drive.check_trap(&mut self.cpu) {
@@ -395,8 +445,127 @@ impl SystemEmulator for C64 {
             // Run drive CPU in lockstep (both at ~1 MHz)
             if let Some(ref mut dcpu) = self.drive_cpu {
                 dcpu.step();
-                // Sync IEC after drive step so C64 sees current drive output
+            }
+            // Sync IEC after drive step so C64 sees current drive output
+            if self.drive_cpu.is_some() {
                 self.sync_iec();
+            }
+            // Log key drive events — check PC first to avoid per-instruction overhead
+            if let Some(ref mut dcpu) = self.drive_cpu {
+                if self.iec_trace_frames > 0 {
+                    let pc = dcpu.pc;
+                    match pc {
+                        0xE931 => {
+                            let ch = dcpu.bus.ram[0x82] as usize;
+                            let f2x = dcpu.bus.ram[0xF2 + ch.min(13)];
+                            if f2x & 0x08 == 0 {
+                                log::info!("[EOI] E931 USE_EOI ch={} F2,X={:02X}", ch, f2x);
+                            }
+                        }
+                        0xD3FA => {
+                            let ch = dcpu.bus.ram[0x82] as usize;
+                            log::info!("[EOI] D3FA: REL last-byte flag SET ch={}", ch);
+                        }
+                        0xD162 => {
+                            let ch = dcpu.bus.ram[0x82] as usize;
+                            let f2x = dcpu.bus.ram[0xF2 + ch.min(13)];
+                            log::info!("[EOI] D162: PRG EOI flag SET ch={} F2={:02X}", ch, f2x);
+                        }
+                        0xD16A => {
+                            let ch = dcpu.bus.ram[0x82] as usize;
+                            let trk = dcpu.bus.ram[0x18];
+                            let sec = dcpu.bus.ram[0x19];
+                            let zp80 = dcpu.bus.ram[0x80];
+                            let zp81 = dcpu.bus.ram[0x81];
+                            let b0_0 = dcpu.bus.ram[0x300];
+                            let b0_1 = dcpu.bus.ram[0x301];
+                            let b1_0 = dcpu.bus.ram[0x400];
+                            let b1_1 = dcpu.bus.ram[0x401];
+                            let a7x = dcpu.bus.ram[0xA7 + ch.min(13)];
+                            let aex = dcpu.bus.ram[0xAE + ch.min(13)];
+                            let bst: [u8; 4] = core::array::from_fn(|i| dcpu.bus.ram[i]);
+                            let zp9a = dcpu.bus.ram[0x9A];
+                            let zp99 = dcpu.bus.ram[0x99];
+                            let zp9c = dcpu.bus.ram[0x9C];
+                            let zp9b = dcpu.bus.ram[0x9B];
+                            log::info!("[D16A] entry disk=({},{}) $80/$81=({},{}) B0[0,1]=({},{}) B1[0,1]=({},{}) A7={:02X} AE={:02X} bst=[{:02X},{:02X},{:02X},{:02X}] ptr=$9A/$99={:02X}/{:02X} $9C/$9B={:02X}/{:02X}",
+                                trk, sec, zp80, zp81, b0_0, b0_1, b1_0, b1_1,
+                                a7x, aex, bst[0], bst[1], bst[2], bst[3],
+                                zp9a, zp99, zp9c, zp9b);
+                        }
+                        0xD180 => {
+                            let ch = dcpu.bus.ram[0x82] as usize;
+                            let zp80 = dcpu.bus.ram[0x80];
+                            let zp81 = dcpu.bus.ram[0x81];
+                            let a7x = dcpu.bus.ram[0xA7 + ch.min(13)];
+                            let aex = dcpu.bus.ram[0xAE + ch.min(13)];
+                            let bst: [u8; 4] = core::array::from_fn(|i| dcpu.bus.ram[i]);
+                            log::info!("[D16A] D180 $80/$81=({},{}) A7={:02X} AE={:02X} bst=[{:02X},{:02X},{:02X},{:02X}]",
+                                zp80, zp81, a7x, aex, bst[0], bst[1], bst[2], bst[3]);
+                        }
+                        0xD18C => {
+                            let ch = dcpu.bus.ram[0x82] as usize;
+                            let zp80 = dcpu.bus.ram[0x80];
+                            let zp81 = dcpu.bus.ram[0x81];
+                            let a7x = dcpu.bus.ram[0xA7 + ch.min(13)];
+                            let aex = dcpu.bus.ram[0xAE + ch.min(13)];
+                            let bst: [u8; 4] = core::array::from_fn(|i| dcpu.bus.ram[i]);
+                            log::info!("[D16A] D18C $80/$81=({},{}) A7={:02X} AE={:02X} bst=[{:02X},{:02X},{:02X},{:02X}]",
+                                zp80, zp81, a7x, aex, bst[0], bst[1], bst[2], bst[3]);
+                        }
+                        0xDCB3 => {
+                            let ch = dcpu.bus.ram[0x82] as usize;
+                            log::info!("[EOI] DCB3: TALK sets F2,X=$88 ch={}", ch);
+                        }
+                        0xF533 => {
+                            let trk = dcpu.bus.ram[0x18];
+                            let sec = dcpu.bus.ram[0x19];
+                            let half_trk = dcpu.bus.disk.half_track;
+                            log::info!("[SCAN] F533 seeking ({},{}) half_trk={}", trk, sec, half_trk);
+                        }
+                        0xF54E => {
+                            // Header comparison mismatch — wrong sector found, retry
+                            let trk = dcpu.bus.ram[0x18];
+                            let sec = dcpu.bus.ram[0x19];
+                            let x_reg = dcpu.x;
+                            let y_reg = dcpu.y;
+                            let a_reg = dcpu.a;
+                            let hdr_exp: [u8; 8] = core::array::from_fn(|i| dcpu.bus.ram[0x24 + i]);
+                            let via2_ira = dcpu.bus.via2.ira;
+                            let exp_byte = hdr_exp.get(y_reg as usize).copied().unwrap_or(0xFF);
+                            log::info!("[SCAN] F54E mismatch retry={} target=({},{}) Y={} actual=0x{:02X} expected=0x{:02X} via2ira=0x{:02X} hdr={:02X?}",
+                                x_reg, trk, sec, y_reg, a_reg, exp_byte, via2_ira, hdr_exp);
+                        }
+                        0xF553 => {
+                            // T1 timeout: sync not found in window, or all retries exhausted
+                            let trk = dcpu.bus.ram[0x18];
+                            let sec = dcpu.bus.ram[0x19];
+                            let half_trk = dcpu.bus.disk.half_track;
+                            log::info!("[SCAN] F553 timeout target=({},{}) half_trk={}", trk, sec, half_trk);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Periodic heartbeat during IEC tracing
+            if self.iec_trace_frames > 0 {
+                heartbeat += 1;
+                if heartbeat % HEARTBEAT_INTERVAL == 0 {
+                    let drv_info = if let Some(ref dcpu) = self.drive_cpu {
+                        format!("DRV_PC={:04X} DRV_CLK={} DRV_DATA={}",
+                            dcpu.pc, self.iec_bus.drive_clk as u8, self.iec_bus.drive_data as u8)
+                    } else {
+                        "no drive".into()
+                    };
+                    log::info!(
+                        "[IEC] heartbeat C64_PC={:04X} C64_CLK={} C64_DATA={} bus_clk={} bus_data={} | {}",
+                        self.cpu.pc,
+                        self.iec_bus.c64_clk as u8, self.iec_bus.c64_data as u8,
+                        self.iec_bus.clk() as u8, self.iec_bus.data() as u8,
+                        drv_info,
+                    );
+                }
             }
 
             if self.cpu.bus.vic.is_frame_ready() {
@@ -415,6 +584,24 @@ impl SystemEmulator for C64 {
     }
 
     fn handle_input(&mut self, event: InputEvent) {
+        // Joystick port 2: Up=0, Down=1, Left=2, Right=3, Fire=4
+        let joy_bit = match event.button {
+            Button::Up    => Some(0u8),
+            Button::Down  => Some(1),
+            Button::Left  => Some(2),
+            Button::Right => Some(3),
+            Button::Fire | Button::A | Button::B => Some(4),
+            _ => None,
+        };
+        if let Some(bit) = joy_bit {
+            if event.pressed {
+                self.cpu.bus.cia1.joy2_down(bit);
+            } else {
+                self.cpu.bus.cia1.joy2_up(bit);
+            }
+            return;
+        }
+
         if let Button::Key(ascii) = event.button {
             if let Some((row, col)) = ascii_to_matrix(ascii) {
                 if event.pressed {

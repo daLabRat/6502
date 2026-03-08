@@ -23,4 +23,11 @@ pub trait Bus {
 
     /// Check if an IRQ line is asserted (active low, level-triggered).
     fn poll_irq(&mut self) -> bool;
+
+    /// Check if the SO (Set Overflow) pin has been pulsed low since the last call.
+    /// On the NMOS 6502, a falling edge on SO sets the V flag.
+    /// Used by the 1541 drive to signal BYTE READY to the CPU.
+    fn poll_so(&mut self) -> bool {
+        false
+    }
 }

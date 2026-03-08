@@ -24,6 +24,7 @@ pub struct EmuApp {
     config: Config,
     audio_buffer: Vec<f32>,
     error_msg: Option<String>,
+    last_frame_time: std::time::Instant,
 }
 
 impl EmuApp {
@@ -43,6 +44,7 @@ impl EmuApp {
             config,
             audio_buffer: vec![0.0; 2048],
             error_msg: None,
+            last_frame_time: std::time::Instant::now(),
         }
     }
 
@@ -315,17 +317,22 @@ impl eframe::App for EmuApp {
                     }
                 }
                 Screen::Emulation => {
-                    // Step emulation
                     if let Some(ref mut sys) = self.system {
-                        sys.step_frame();
+                        // Only step emulation when a full frame's worth of wall time has elapsed
+                        let target = std::time::Duration::from_secs_f64(1.0 / sys.target_fps());
+                        let now = std::time::Instant::now();
+                        if now.duration_since(self.last_frame_time) >= target {
+                            self.last_frame_time = now;
+                            sys.step_frame();
 
-                        // Drain audio
-                        let count = sys.audio_samples(&mut self.audio_buffer);
-                        if let Some(ref mut audio) = self.audio {
-                            audio.push_samples(&self.audio_buffer[..count], self.config.volume);
+                            // Drain audio
+                            let count = sys.audio_samples(&mut self.audio_buffer);
+                            if let Some(ref mut audio) = self.audio {
+                                audio.push_samples(&self.audio_buffer[..count], self.config.volume);
+                            }
                         }
 
-                        // Render framebuffer
+                        // Always render the last completed frame
                         let fb = sys.framebuffer();
                         let aspect = sys.display_aspect_ratio() as f32;
                         crate::screens::emulation::render(ui, &mut self.texture, fb, aspect);

@@ -21,6 +21,21 @@ pub struct Drive1541Bus {
 
     // Last stepper phase for edge detection
     last_stepper_phase: u8,
+    // Last motor state for change detection
+    last_motor_on: bool,
+    // Bytes logged since motor-on (capped to avoid log flood)
+    disk_log_count: u32,
+
+    /// SO (Set Overflow) pin pending: true when a BYTE READY pulse occurred this tick.
+    /// The 1541 firmware polls BVS (CLV + BVC loop) to wait for bytes from disk.
+    so_pending: bool,
+
+    /// Count of consecutive 0xFF bytes received from disk.
+    /// The 1541 sync detector fires on 10+ consecutive serial 1-bits; in our
+    /// byte-at-a-time model that requires ≥2 consecutive 0xFF bytes (16+ bits).
+    /// An isolated 0xFF in GCR data (valid: e.g. g3=0x0F, g4=0x1E share a byte
+    /// boundary) must NOT suppress BYTE READY — only a true sync run should.
+    consecutive_ff: u8,
 }
 
 impl Drive1541Bus {
@@ -32,6 +47,10 @@ impl Drive1541Bus {
             via2: Via::new(),
             disk: GcrDisk::new(),
             last_stepper_phase: 0,
+            last_motor_on: false,
+            disk_log_count: 0,
+            so_pending: false,
+            consecutive_ff: 0,
         };
         // Device 8 address select: PB5=0, PB6=0 (hardware jumpers grounded)
         // The firmware reads these pins at $EB3C to determine the IEC device number.
@@ -79,24 +98,76 @@ impl Drive1541Bus {
         let pb = self.via2.port_b_output();
 
         // Motor control: bit 2
-        self.disk.motor_on = pb & 0x04 != 0;
+        let motor_on = pb & 0x04 != 0;
+        if motor_on != self.last_motor_on {
+            log::info!("[DISK] Motor {} trk={}", if motor_on { "ON" } else { "OFF" }, self.disk.half_track / 2 + 1);
+            self.last_motor_on = motor_on;
+            self.disk_log_count = 0;
+            self.consecutive_ff = 0; // Reset sync state on motor change
+        }
+        self.disk.motor_on = motor_on;
 
         // Stepper motor: bits 0-1
         let stepper_phase = pb & 0x03;
         if stepper_phase != self.last_stepper_phase {
+            let old_track = self.disk.half_track / 2 + 1;
             self.disk.step_head(stepper_phase);
             self.last_stepper_phase = stepper_phase;
+            let new_track = self.disk.half_track / 2 + 1;
+            if new_track != old_track {
+                log::info!("[DISK] Seek trk={}", new_track);
+                self.disk_log_count = 0; // Reset byte log cap on track change
+                self.consecutive_ff = 0; // Reset sync state after seek
+            }
         }
 
         // Step disk rotation
         self.disk.step();
 
-        // When a byte is ready from the disk, deliver it to VIA2 Port A
-        // and trigger CA1 (byte-ready interrupt)
+        // When a byte is ready from the disk, deliver it to VIA2 Port A,
+        // pulse VIA2 CA1, and assert SO pin (BYTE READY).
+        //
+        // On real 1541 hardware, the sync detection circuit suppresses BYTE READY
+        // (both the SO pin and CA1) while reading sync bytes (consecutive $FF /
+        // 10+ consecutive 1-bits). SO and CA1 only fire for the first actual data
+        // byte after sync. This is critical for the IRQ-driven disk read ISR
+        // ($F2B0): if CA1 fired during sync bytes, the ISR would process $FF bytes
+        // as data bytes, causing GCR data checksum errors (status $05).
         if self.disk.byte_ready {
             self.disk.byte_ready = false;
             self.via2.ira = self.disk.current_byte;
-            self.via2.ca1_input = true;
+
+            // VIA2 Port B bit 7 = ~SYNC (hardware sync detect):
+            // LOW (0) when 10+ consecutive 1-bits are read from the serial GCR stream.
+            // In our byte-at-a-time model: a single 0xFF = 8 serial 1s (not enough);
+            // only 2+ consecutive 0xFF bytes = 16+ serial 1s triggers SYNC.
+            //
+            // This matters because valid GCR-encoded data can produce isolated 0xFF
+            // bytes (e.g. when GCR nibble codes 0x0F and 0x1E share a byte boundary).
+            // Treating isolated 0xFF as sync suppresses BYTE READY, causing the BVC
+            // read loop to skip the byte and corrupt GCR decoding (status $05 error).
+            if self.disk.current_byte == 0xFF {
+                self.consecutive_ff = self.consecutive_ff.saturating_add(1);
+            } else {
+                self.consecutive_ff = 0;
+            }
+            let is_sync = self.consecutive_ff >= 2;
+
+            if is_sync {
+                self.via2.irb &= !0x80; // bit 7 = 0: SYNC detected
+                self.via2.ca1_input = false; // Suppress CA1 and SO during sync
+            } else {
+                self.via2.irb |= 0x80;  // bit 7 = 1: no sync
+                self.via2.ca1_input = true;  // Pulse CA1 (triggers byte-ready IRQ)
+                self.so_pending = true;  // Assert SO (Set Overflow) = BYTE READY
+            }
+            if self.disk_log_count < 300 {
+                log::debug!("[DISK] trk={} pos={} byte={:02X}",
+                    self.disk.half_track / 2 + 1,
+                    self.disk.byte_position,
+                    self.disk.current_byte);
+                self.disk_log_count += 1;
+            }
         } else {
             self.via2.ca1_input = false;
         }
@@ -126,7 +197,9 @@ impl Bus for Drive1541Bus {
 
     fn write(&mut self, addr: u16, val: u8) {
         match addr {
-            0x0000..=0x0FFF => self.ram[(addr & 0x07FF) as usize] = val,
+            0x0000..=0x0FFF => {
+                self.ram[(addr & 0x07FF) as usize] = val;
+            }
             0x1800..=0x1BFF => self.via1.write(addr, val),
             0x1C00..=0x1FFF => self.via2.write(addr, val),
             0xC000..=0xFFFF => {} // ROM — ignore writes
@@ -159,5 +232,12 @@ impl Bus for Drive1541Bus {
 
     fn poll_irq(&mut self) -> bool {
         self.via1.irq_pending() || self.via2.irq_pending()
+    }
+
+    fn poll_so(&mut self) -> bool {
+        // BYTE READY asserts SO pin (set overflow) for the 1541's BVC polling loops
+        let pending = self.so_pending;
+        self.so_pending = false;
+        pending
     }
 }

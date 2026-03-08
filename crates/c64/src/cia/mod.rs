@@ -34,6 +34,10 @@ pub struct Cia {
     /// Keyboard matrix state (CIA1 only).
     /// 8x8 matrix: rows selected by PRA output, columns read from PRB.
     pub keyboard_matrix: [u8; 8],
+
+    /// Joystick port 2 state (CIA1 only), active-low bits 0-4.
+    /// Bit 0=Up, 1=Down, 2=Left, 3=Right, 4=Fire. 0=pressed.
+    pub joy2: u8,
 }
 
 impl Cia {
@@ -56,6 +60,7 @@ impl Cia {
             irq_pending: false,
             is_cia1,
             keyboard_matrix: [0xFF; 8],
+            joy2: 0xFF,
         }
     }
 
@@ -79,7 +84,8 @@ impl Cia {
                             result &= self.keyboard_matrix[i];
                         }
                     }
-                    result
+                    // Joystick port 2 drives bits 0-4 of Port B (active low)
+                    result & self.joy2
                 } else {
                     (self.prb & self.ddrb) | (!self.ddrb)
                 }
@@ -197,5 +203,16 @@ impl Cia {
         if row < 8 && col < 8 {
             self.keyboard_matrix[row as usize] |= 1 << col;
         }
+    }
+
+    /// Press a joystick port 2 direction/fire (CIA1 only).
+    /// bit: 0=Up, 1=Down, 2=Left, 3=Right, 4=Fire
+    pub fn joy2_down(&mut self, bit: u8) {
+        self.joy2 &= !(1 << bit);
+    }
+
+    /// Release a joystick port 2 direction/fire.
+    pub fn joy2_up(&mut self, bit: u8) {
+        self.joy2 |= 1 << bit;
     }
 }
