@@ -12,6 +12,8 @@ pub struct SoftSwitches {
     pub an1: bool,
     pub an2: bool,
     pub an3: bool,
+    /// Double hi-res mode: active when col80=true AND an3=false.
+    pub dhgr: bool,
 
     // IIe extended switches
     pub store80: bool,     // $C000/$C001: 80STORE off/on
@@ -49,6 +51,7 @@ impl SoftSwitches {
             an1: false,
             an2: false,
             an3: false,
+            dhgr: false,
             store80: false,
             ramrd: false,
             ramwrt: false,
@@ -87,6 +90,8 @@ impl SoftSwitches {
         self.col80 = s.col80; self.altcharset = s.altcharset;
         self.lc_bank2 = s.lc_bank2; self.lc_read_enable = s.lc_read_enable;
         self.vbl = s.vbl; self.is_iie = s.is_iie; self.intc8rom = s.intc8rom;
+        // dhgr is derived from col80 and an3
+        self.dhgr = self.col80 && !self.an3;
     }
 
     /// Handle read/write to soft switch addresses ($C050-$C05F).
@@ -106,8 +111,8 @@ impl SoftSwitches {
             0xC05B => self.an1 = true,
             0xC05C => self.an2 = false,
             0xC05D => self.an2 = true,
-            0xC05E => self.an3 = false,
-            0xC05F => self.an3 = true,
+            0xC05E => { self.an3 = false; self.dhgr = self.col80; }
+            0xC05F => { self.an3 = true;  self.dhgr = false; }
             _ => {}
         }
     }
@@ -128,8 +133,8 @@ impl SoftSwitches {
             0xC009 => { log::info!("IIe: ALTZP on"); self.altzp = true; }
             0xC00A => { log::info!("IIe: SLOTC3ROM off (internal)"); self.slotc3rom = false; }
             0xC00B => { log::info!("IIe: SLOTC3ROM on (slot)"); self.slotc3rom = true; }
-            0xC00C => { log::info!("IIe: 80COL off"); self.col80 = false; }
-            0xC00D => { log::info!("IIe: 80COL on"); self.col80 = true; }
+            0xC00C => { log::info!("IIe: 80COL off"); self.col80 = false; self.dhgr = false; }
+            0xC00D => { log::info!("IIe: 80COL on"); self.col80 = true; self.dhgr = !self.an3; }
             0xC00E => { log::info!("IIe: ALTCHARSET off"); self.altcharset = false; }
             0xC00F => { log::info!("IIe: ALTCHARSET on"); self.altcharset = true; }
             _ => {}
