@@ -52,6 +52,7 @@ impl Bus for Atari2600Bus {
         let addr = addr & 0x1FFF;
 
         self.cartridge.check_bank_switch(addr);
+        self.cartridge.check_bank_switch_write(addr, val);
 
         if addr & 0x1000 != 0 {
             // Cartridge (some mappers have writable areas)
