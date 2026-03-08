@@ -19,11 +19,11 @@ pub struct NesBus {
     pub controller2: Controller,
 
     // OAM DMA state
-    oam_dma_page: u8,
-    oam_dma_pending: bool,
+    pub(crate) oam_dma_page: u8,
+    pub(crate) oam_dma_pending: bool,
 
     // Cycle tracking for PPU synchronization
-    ppu_nmi_pending: bool,
+    pub(crate) ppu_nmi_pending: bool,
 }
 
 impl NesBus {

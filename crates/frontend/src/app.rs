@@ -79,7 +79,7 @@ impl EmuApp {
         if let Some(ref audio) = self.audio {
             sys.set_sample_rate(audio.sample_rate);
         }
-        let sys_name = sys.system_name().to_string();
+        let sys_name = sys.save_state_system_id().to_string();
         self.system = Some(sys);
         self.screen = Screen::Emulation;
         self.texture = None;

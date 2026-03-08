@@ -77,6 +77,7 @@ impl SystemEmulator for Nes {
     fn display_height(&self) -> u32 { 240 }
     fn target_fps(&self) -> f64 { 60.0988 }
     fn system_name(&self) -> &str { "NES" }
+    fn save_state_system_id(&self) -> &str { "NES" }
 
     fn cpu_state(&self) -> CpuDebugState {
         CpuDebugState { pc: self.cpu.pc, sp: self.cpu.sp, a: self.cpu.a,
@@ -92,11 +93,14 @@ impl SystemEmulator for Nes {
 
     fn save_state(&self) -> Result<Vec<u8>, String> {
         let snap = crate::snapshot::NesSnapshot {
-            cpu:          self.cpu.snapshot(),
-            ram:          self.cpu.bus.ram.to_vec(),
-            ppu:          self.cpu.bus.ppu.snapshot(),
-            apu:          self.cpu.bus.apu.snapshot(),
-            mapper_state: self.cpu.bus.cartridge.mapper.mapper_state(),
+            cpu:             self.cpu.snapshot(),
+            ram:             self.cpu.bus.ram.to_vec(),
+            ppu:             self.cpu.bus.ppu.snapshot(),
+            apu:             self.cpu.bus.apu.snapshot(),
+            mapper_state:    self.cpu.bus.cartridge.mapper.mapper_state(),
+            oam_dma_pending: self.cpu.bus.oam_dma_pending,
+            oam_dma_page:    self.cpu.bus.oam_dma_page,
+            ppu_nmi_pending: self.cpu.bus.ppu_nmi_pending,
         };
         let bytes = bincode::serde::encode_to_vec(&snap, bincode::config::standard())
             .map_err(|e| e.to_string())?;
@@ -109,10 +113,20 @@ impl SystemEmulator for Nes {
             bincode::serde::decode_from_slice(payload, bincode::config::standard())
                 .map_err(|e| e.to_string())?;
         self.cpu.restore(&snap.cpu);
+        if snap.ram.len() != self.cpu.bus.ram.len() {
+            return Err(format!(
+                "NES save state: expected {} bytes for RAM, got {}",
+                self.cpu.bus.ram.len(),
+                snap.ram.len()
+            ));
+        }
         self.cpu.bus.ram.copy_from_slice(&snap.ram);
         self.cpu.bus.ppu.restore(&snap.ppu);
         self.cpu.bus.apu.restore(&snap.apu);
         self.cpu.bus.cartridge.mapper.restore_mapper_state(&snap.mapper_state);
+        self.cpu.bus.oam_dma_pending = snap.oam_dma_pending;
+        self.cpu.bus.oam_dma_page    = snap.oam_dma_page;
+        self.cpu.bus.ppu_nmi_pending = snap.ppu_nmi_pending;
         Ok(())
     }
 }

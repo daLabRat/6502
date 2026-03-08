@@ -116,6 +116,7 @@ impl SystemEmulator for Apple2 {
     fn display_height(&self) -> u32 { 192 }
     fn target_fps(&self) -> f64 { 60.0 }
     fn system_name(&self) -> &str { "Apple II" }
+    fn save_state_system_id(&self) -> &str { "Apple2" }
 
     fn cpu_state(&self) -> CpuDebugState {
         CpuDebugState { pc: self.cpu.pc, sp: self.cpu.sp, a: self.cpu.a,

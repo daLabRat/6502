@@ -688,6 +688,7 @@ impl SystemEmulator for C64 {
     fn display_height(&self) -> u32 { vic_ii::SCREEN_HEIGHT }
     fn target_fps(&self) -> f64 { 50.0 } // PAL
     fn system_name(&self) -> &str { "Commodore 64" }
+    fn save_state_system_id(&self) -> &str { "C64" }
 
     fn cpu_state(&self) -> CpuDebugState {
         CpuDebugState {

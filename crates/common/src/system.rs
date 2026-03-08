@@ -49,6 +49,14 @@ pub trait SystemEmulator {
     /// Name of this system for display in the UI.
     fn system_name(&self) -> &str;
 
+    /// Stable short identifier used for save-state directory names.
+    /// Must not contain spaces or special characters.
+    /// Defaults to `system_name()` but should be overridden by each system
+    /// so that renaming the display name never invalidates existing save files.
+    fn save_state_system_id(&self) -> &str {
+        self.system_name()
+    }
+
     // ── Debugger interface ────────────────────────────────────────────────
 
     /// Snapshot of CPU registers for the debugger.

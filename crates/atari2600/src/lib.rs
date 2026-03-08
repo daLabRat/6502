@@ -155,6 +155,7 @@ impl SystemEmulator for Atari2600 {
     fn display_height(&self) -> u32 { tia::SCREEN_HEIGHT }
     fn target_fps(&self) -> f64 { 59.94 }
     fn system_name(&self) -> &str { "Atari 2600" }
+    fn save_state_system_id(&self) -> &str { "Atari2600" }
 
     fn cpu_state(&self) -> CpuDebugState {
         CpuDebugState { pc: self.cpu.pc, sp: self.cpu.sp, a: self.cpu.a,

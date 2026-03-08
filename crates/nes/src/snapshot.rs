@@ -112,4 +112,7 @@ pub struct NesSnapshot {
     pub ppu: PpuSnapshot,
     pub apu: ApuSnapshot,
     pub mapper_state: Vec<u8>,
+    pub oam_dma_pending: bool,
+    pub oam_dma_page: u8,
+    pub ppu_nmi_pending: bool,
 }
