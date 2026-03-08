@@ -177,14 +177,15 @@ impl Mapper for Mmc1 {
     }
 
     fn mapper_state(&self) -> Vec<u8> {
-        vec![
-            self.shift,
-            self.shift_count,
-            self.control,
-            self.chr_bank0,
-            self.chr_bank1,
-            self.prg_bank,
-        ]
+        let mut data = Vec::with_capacity(6 + self.prg_ram.len());
+        data.push(self.shift);
+        data.push(self.shift_count);
+        data.push(self.control);
+        data.push(self.chr_bank0);
+        data.push(self.chr_bank1);
+        data.push(self.prg_bank);
+        data.extend_from_slice(&self.prg_ram);
+        data
     }
 
     fn restore_mapper_state(&mut self, data: &[u8]) {
@@ -196,6 +197,11 @@ impl Mapper for Mmc1 {
             self.chr_bank1 = data[4];
             self.prg_bank = data[5];
             self.update_mirroring();
+            // Restore prg_ram if enough bytes remain
+            let prg_ram_offset = 6;
+            if data.len() >= prg_ram_offset + 8192 {
+                self.prg_ram.copy_from_slice(&data[prg_ram_offset..prg_ram_offset + 8192]);
+            }
         }
     }
 }

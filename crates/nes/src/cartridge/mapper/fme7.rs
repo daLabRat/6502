@@ -174,7 +174,7 @@ impl Mapper for Fme7 {
     }
 
     fn mapper_state(&self) -> Vec<u8> {
-        let mut data = Vec::with_capacity(20);
+        let mut data = Vec::with_capacity(19 + self.prg_ram.len());
         data.push(self.command);
         // chr_banks: 8 bytes
         for &b in &self.chr_banks {
@@ -200,11 +200,12 @@ impl Mapper for Fme7 {
         data.push(self.irq_enabled as u8);
         data.push(self.irq_counter_enabled as u8);
         data.push(self.irq_pending as u8);
+        data.extend_from_slice(&self.prg_ram);
         data
     }
 
     fn restore_mapper_state(&mut self, data: &[u8]) {
-        if data.len() >= 20 {
+        if data.len() >= 19 {
             self.command = data[0];
             for i in 0..8 {
                 self.chr_banks[i] = data[1 + i] as usize;
@@ -224,6 +225,11 @@ impl Mapper for Fme7 {
             self.irq_enabled = data[16] != 0;
             self.irq_counter_enabled = data[17] != 0;
             self.irq_pending = data[18] != 0;
+            // Restore prg_ram if enough bytes remain
+            let prg_ram_offset = 19;
+            if data.len() >= prg_ram_offset + 8192 {
+                self.prg_ram.copy_from_slice(&data[prg_ram_offset..prg_ram_offset + 8192]);
+            }
         }
     }
 }

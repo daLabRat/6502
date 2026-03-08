@@ -225,7 +225,7 @@ impl Mapper for Mmc3 {
     }
 
     fn mapper_state(&self) -> Vec<u8> {
-        let mut data = Vec::with_capacity(16);
+        let mut data = Vec::with_capacity(15 + self.prg_ram.len());
         data.push(self.bank_select);
         data.extend_from_slice(&self.bank_regs);
         data.push(self.irq_counter);
@@ -238,11 +238,12 @@ impl Mapper for Mmc3 {
             Mirroring::Horizontal => 1,
             _ => 0,
         });
+        data.extend_from_slice(&self.prg_ram);
         data
     }
 
     fn restore_mapper_state(&mut self, data: &[u8]) {
-        if data.len() >= 16 {
+        if data.len() >= 15 {
             self.bank_select = data[0];
             self.bank_regs.copy_from_slice(&data[1..9]);
             self.irq_counter = data[9];
@@ -255,6 +256,11 @@ impl Mapper for Mmc3 {
             } else {
                 Mirroring::Vertical
             };
+            // Restore prg_ram if enough bytes remain
+            let prg_ram_offset = 15;
+            if data.len() >= prg_ram_offset + 8192 {
+                self.prg_ram.copy_from_slice(&data[prg_ram_offset..prg_ram_offset + 8192]);
+            }
         }
     }
 }

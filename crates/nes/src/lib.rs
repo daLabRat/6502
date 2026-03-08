@@ -4,6 +4,6 @@ pub mod cartridge;
 pub mod controller;
 pub mod nes;
 pub mod ppu;
-pub mod snapshot;
+mod snapshot;
 
 pub use nes::Nes;
