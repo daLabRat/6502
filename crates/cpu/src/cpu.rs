@@ -163,6 +163,8 @@ impl<B: Bus> Cpu6502<B> {
         self.bus.read(0x0100 | self.sp as u16)
     }
 
+    /// Capture CPU register state as a plain-data snapshot for save states.
+    /// The bus (and its opcode dispatch table) is excluded — it is snapshotted separately.
     pub fn snapshot(&self) -> crate::snapshot::Cpu6502Snapshot {
         crate::snapshot::Cpu6502Snapshot {
             pc: self.pc,
@@ -178,13 +180,15 @@ impl<B: Bus> Cpu6502<B> {
         }
     }
 
+    /// Restore CPU register state from a previously captured snapshot.
+    /// The bus state is not affected; restore the bus separately.
     pub fn restore(&mut self, s: &crate::snapshot::Cpu6502Snapshot) {
         self.pc = s.pc;
         self.sp = s.sp;
         self.a = s.a;
         self.x = s.x;
         self.y = s.y;
-        self.p = crate::flags::StatusFlags::from_bits_truncate(s.p);
+        self.p = crate::flags::StatusFlags::from_bits_truncate(s.p); // unknown bits silently discarded — intentional
         self.bcd_enabled = s.bcd_enabled;
         self.cmos_mode = s.cmos_mode;
         self.total_cycles = s.total_cycles;
