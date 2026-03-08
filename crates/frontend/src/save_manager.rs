@@ -109,14 +109,15 @@ impl SaveManager {
             .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
             .take(48)
             .collect();
-        let ts = Self::timestamp().replace([':', ' ', '-'], "");
-        let filename = format!("named_{}_{}.state", safe, &ts[..8]);
+        let ts = Self::timestamp();  // capture ONCE
+        let ts_compact = ts.replace([':', ' ', '-'], "");
+        let filename = format!("named_{}_{}.state", safe, &ts_compact[..8]);
         let path = self.dir.join(&filename);
         std::fs::write(&path, data).map_err(|e| e.to_string())?;
         self.manifest.named.push(NamedEntry {
             filename,
             name: name.to_string(),
-            saved_at: Self::timestamp(),
+            saved_at: ts,  // use same timestamp
             slot: None,
         });
         self.save_manifest();
@@ -150,6 +151,8 @@ impl SaveManager {
                 ne.slot = None;
             }
         }
+        // Remove any prior slot mapping for this file
+        self.manifest.slots.retain(|_, v| v.filename != filename);
         self.manifest.slots.insert(slot, slot_entry);
         self.save_manifest();
         Ok(())
