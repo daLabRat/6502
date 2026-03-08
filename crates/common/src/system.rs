@@ -67,4 +67,22 @@ pub trait SystemEmulator {
     /// System-specific debug panels (VIC-II, SID, CIA, PPU, etc.).
     /// Returns named sections of key→value rows; the debugger renders them generically.
     fn system_debug_panels(&self) -> Vec<DebugSection> { vec![] }
+
+    // ── Save state interface ──────────────────────────────────────────────
+
+    /// Serialize the complete emulator state to a byte blob.
+    /// Returns Err if save states are not supported for this system.
+    fn save_state(&self) -> Result<Vec<u8>, String> {
+        Err("Save states not supported for this system".into())
+    }
+
+    /// Restore emulator state from a byte blob previously returned by `save_state`.
+    /// Returns Err on version mismatch, data corruption, or unsupported system.
+    fn load_state(&mut self, data: &[u8]) -> Result<(), String> {
+        let _ = data;
+        Err("Save states not supported for this system".into())
+    }
+
+    /// Returns true if this system implements save/load state.
+    fn supports_save_states(&self) -> bool { false }
 }
