@@ -194,19 +194,18 @@ impl Pulse {
     }
 
     pub fn output(&self) -> u8 {
-        if self.length_counter == 0 {
-            return 0;
-        }
-        if self.timer_period < 8 || self.timer_period > 0x7FF {
-            return 0;
-        }
-        if DUTY_TABLE[self.duty as usize][self.duty_pos as usize] == 0 {
-            return 0;
-        }
-        if self.constant_volume {
-            self.envelope_period
+        if self.length_counter == 0 { return 0; }
+        if self.timer_period < 8 { return 0; }
+        // Mute if sweep target would overflow $7FF (not current period)
+        let change = self.timer_period >> self.sweep_shift;
+        let target = if self.sweep_negate {
+            self.timer_period.saturating_sub(change)
+                .saturating_sub(if self.is_pulse1 { 1 } else { 0 })
         } else {
-            self.envelope_decay
-        }
+            self.timer_period.saturating_add(change)
+        };
+        if target > 0x7FF { return 0; }
+        if DUTY_TABLE[self.duty as usize][self.duty_pos as usize] == 0 { return 0; }
+        if self.constant_volume { self.envelope_period } else { self.envelope_decay }
     }
 }
