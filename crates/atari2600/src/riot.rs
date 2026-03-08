@@ -115,6 +115,9 @@ impl Riot {
         }
     }
 
+    pub fn timer_value(&self) -> u8 { self.timer_value }
+    pub fn timer_interval(&self) -> u32 { self.timer_interval }
+
     pub fn snapshot(&self) -> RiotSnapshot {
         RiotSnapshot {
             ram: self.ram,

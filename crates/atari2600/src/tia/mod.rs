@@ -693,6 +693,12 @@ impl Tia {
         diff < size
     }
 
+    /// Audio channel debug info: (audc, audf, audv, output).
+    pub fn audio_ch_debug(&self, ch: usize) -> (u8, u8, u8, bool) {
+        let c = &self.audio_ch[ch];
+        (c.audc, c.audf, c.audv, c.output)
+    }
+
     pub fn snapshot(&self) -> TiaSnapshot {
         let ch = |c: &AudioChannel| AudioChannelSnapshot {
             audc: c.audc, audf: c.audf, audv: c.audv,

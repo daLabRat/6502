@@ -4,7 +4,7 @@ pub mod riot;
 pub mod tia;
 mod snapshot;
 
-use emu_common::{AudioSample, Bus, Button, CpuDebugState, FrameBuffer, InputEvent, SystemEmulator};
+use emu_common::{AudioSample, Bus, Button, CpuDebugState, DebugSection, FrameBuffer, InputEvent, SystemEmulator};
 use crate::snapshot::Atari2600Snapshot;
 use emu_cpu::Cpu6502;
 use bus::Atari2600Bus;
@@ -165,5 +165,40 @@ impl SystemEmulator for Atari2600 {
     fn disassemble(&self, addr: u16) -> (String, u16) {
         emu_cpu::disassemble_6502(|a| self.cpu.bus.peek(a), addr)
     }
+    fn system_debug_panels(&self) -> Vec<DebugSection> {
+        let tia = &self.cpu.bus.tia;
+        let riot = &self.cpu.bus.riot;
+
+        let (audc0, audf0, audv0, out0) = tia.audio_ch_debug(0);
+        let (audc1, audf1, audv1, out1) = tia.audio_ch_debug(1);
+
+        let tia_sec = DebugSection::new("TIA")
+            .row("Scanline/Clock", format!("{} / {}", tia.scanline, tia.clock))
+            .row("VSYNC/VBLANK",   format!("{} / {}", tia.vsync as u8, tia.vblank as u8))
+            .row("BG Color",       format!("${:02X}", tia.colubk))
+            .row("PF Color",       format!("${:02X}  score={} prio={} reflect={}",
+                                           tia.colupf, tia.pf_score as u8,
+                                           tia.pf_priority as u8, tia.pf_reflect as u8))
+            .row("P0 Color/Pos",   format!("${:02X}  pos={}", tia.colup0, tia.resp0))
+            .row("P1 Color/Pos",   format!("${:02X}  pos={}", tia.colup1, tia.resp1))
+            .row("GRP0/GRP1",      format!("{:08b} / {:08b}", tia.grp0, tia.grp1))
+            .row("Collision",      format!("{:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                                           tia.collision[0], tia.collision[1], tia.collision[2],
+                                           tia.collision[3], tia.collision[4], tia.collision[5],
+                                           tia.collision[6], tia.collision[7]))
+            .row("AUD Ch0",        format!("AUDC={:X} AUDF={:02X} AUDV={:X} out={}",
+                                           audc0, audf0, audv0, out0 as u8))
+            .row("AUD Ch1",        format!("AUDC={:X} AUDF={:02X} AUDV={:X} out={}",
+                                           audc1, audf1, audv1, out1 as u8));
+
+        let riot_sec = DebugSection::new("RIOT")
+            .row("Timer",   format!("${:02X}  interval={}", riot.timer_value(), riot.timer_interval()))
+            .row("SWCHA",   format!("{:08b}  (P0:{:04b} P1:{:04b})",
+                                    riot.swcha, riot.swcha >> 4, riot.swcha & 0xF))
+            .row("SWCHB",   format!("{:08b}", riot.swchb));
+
+        vec![tia_sec, riot_sec]
+    }
+
     fn step_instruction(&mut self) { self.cpu.step(); }
 }
