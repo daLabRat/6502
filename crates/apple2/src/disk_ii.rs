@@ -39,10 +39,18 @@ static WRITE_TABLE: [u8; 64] = [
 pub struct DiskII {
     /// Pre-nibblized track data (35 tracks).
     nibble_data: Vec<[u8; TRACK_NIBBLE_SIZE]>,
+    /// Mutable nibble track data (written over nibble_data on write).
+    /// Initialised as a clone of nibble_data when a disk is loaded.
+    write_data: Vec<[u8; TRACK_NIBBLE_SIZE]>,
+    /// Which tracks have been written since last save.
+    dirty_tracks: Vec<bool>,
+    /// Write latch: byte staged by STA $C0ED, written on next step tick.
+    write_latch: u8,
+    write_latch_ready: bool,
     /// Current track (0-34).
     pub(crate) current_track: u8,
     /// Current byte position within the track's nibble stream.
-    byte_position: usize,
+    pub(crate) byte_position: usize,
     /// Motor on/off.
     pub(crate) motor_on: bool,
     /// Phase magnet states (4 phases for head stepping).
@@ -54,7 +62,7 @@ pub struct DiskII {
     /// Write mode flag.
     pub(crate) write_mode: bool,
     /// Whether a disk is loaded.
-    disk_loaded: bool,
+    pub(crate) disk_loaded: bool,
     /// Boot ROM (256 bytes, P5 PROM at $C600-$C6FF).
     boot_rom: [u8; 256],
     /// Cycle accumulator for nibble timing (~32 CPU cycles per nibble byte).
@@ -65,6 +73,10 @@ impl DiskII {
     pub fn new() -> Self {
         Self {
             nibble_data: Vec::new(),
+            write_data: Vec::new(),
+            dirty_tracks: Vec::new(),
+            write_latch: 0,
+            write_latch_ready: false,
             current_track: 0,
             byte_position: 0,
             motor_on: false,
@@ -112,6 +124,8 @@ impl DiskII {
             ));
         }
 
+        self.write_data = self.nibble_data.clone();
+        self.dirty_tracks = vec![false; NUM_TRACKS];
         self.disk_loaded = true;
         self.current_track = 0;
         self.byte_position = 0;
@@ -144,7 +158,11 @@ impl DiskII {
                 val
             }
             0xD => {
-                // Q6H: Write load (not implemented for read-only)
+                // Q6H in write mode: latch the current data_latch as write byte
+                if self.write_mode {
+                    self.write_latch = self.data_latch;
+                    self.write_latch_ready = true;
+                }
                 0
             }
             0xE => {
@@ -163,7 +181,7 @@ impl DiskII {
     }
 
     /// Handle I/O write ($C0E0-$C0EF).
-    pub fn io_write(&mut self, addr: u16, _val: u8) {
+    pub fn io_write(&mut self, addr: u16, val: u8) {
         let switch = (addr & 0x0F) as u8;
         match switch {
             0x0..=0x7 => self.handle_phase(switch),
@@ -171,7 +189,13 @@ impl DiskII {
             0x9 => self.motor_on = true,
             0xA | 0xB => {} // Drive select
             0xC => { /* Q6L */ }
-            0xD => { /* Q6H: write load */ }
+            0xD => {
+                // Q6H in write mode: load write latch with byte from CPU
+                if self.write_mode {
+                    self.write_latch = val;
+                    self.write_latch_ready = true;
+                }
+            }
             0xE => self.write_mode = false,
             0xF => self.write_mode = true,
             _ => {}
@@ -194,10 +218,21 @@ impl DiskII {
             self.cycle_accumulator -= 32;
             self.byte_position = (self.byte_position + 1) % TRACK_NIBBLE_SIZE;
 
-            // Load the new byte into the data latch (bit 7 set = valid nibble ready)
-            if !self.write_mode {
-                if let Some(track) = self.nibble_data.get(self.current_track as usize) {
-                    self.data_latch = track[self.byte_position];
+            if self.write_mode {
+                // Flush the staged write latch byte into the track buffer
+                if self.write_latch_ready {
+                    let track = self.current_track as usize;
+                    if track < self.write_data.len() {
+                        self.write_data[track][self.byte_position] = self.write_latch;
+                        self.dirty_tracks[track] = true;
+                    }
+                    self.write_latch_ready = false;
+                }
+            } else {
+                // Read: load nibble from write_data (reflects any writes done this session)
+                let track = self.current_track as usize;
+                if let Some(track_data) = self.write_data.get(track) {
+                    self.data_latch = track_data[self.byte_position];
                 }
             }
         }
@@ -289,6 +324,40 @@ impl DiskII {
             self.current_track = new_track;
             self.byte_position = 0;
         }
+    }
+
+    /// Return true if any track has been written since the last `clear_dirty()`.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty_tracks.iter().any(|&d| d)
+    }
+
+    /// Clear all dirty flags (call after saving the disk image).
+    pub fn clear_dirty(&mut self) {
+        for d in &mut self.dirty_tracks {
+            *d = false;
+        }
+    }
+
+    /// Recover the modified disk image by denibblizing all dirty tracks.
+    /// Returns `None` if no tracks have been written since load or last save.
+    pub fn get_modified_dsk(&self) -> Option<Vec<u8>> {
+        if !self.is_dirty() {
+            return None;
+        }
+
+        let mut dsk = vec![0u8; 143360];
+        for track in 0..NUM_TRACKS {
+            if track >= self.write_data.len() { break; }
+            let nibbles = &self.write_data[track];
+            let sectors = denibblize_track(nibbles);
+            for physical in 0..16 {
+                let logical = DOS33_PHYSICAL_TO_LOGICAL[physical];
+                let offset = track * 4096 + logical * 256;
+                dsk[offset..offset + 256].copy_from_slice(&sectors[physical]);
+            }
+        }
+
+        Some(dsk)
     }
 
 }
@@ -542,6 +611,30 @@ mod tests {
     }
 
     #[test]
+    fn test_write_round_trip() {
+        // Build a 143360-byte DSK with known sector 0 data
+        let mut dsk = vec![0u8; 143360];
+        for i in 0..256 {
+            dsk[i] = i as u8; // Track 0, logical sector 0 = 0x00..0xFF
+        }
+
+        let mut disk = DiskII::new();
+        disk.load_dsk(&dsk).unwrap();
+
+        // Directly inject a modified nibblized track 0 with sector 0 = all 0xAB
+        let new_sector = [0xABu8; 256];
+        let mut new_track_data = [0u8; 4096];
+        new_track_data[..256].copy_from_slice(&new_sector);
+        let nibblized = nibblize_track_with_interleave(0, &new_track_data, &DOS33_PHYSICAL_TO_LOGICAL);
+        disk.write_data[0] = nibblized;
+        disk.dirty_tracks[0] = true;
+
+        let modified = disk.get_modified_dsk().unwrap();
+        assert_eq!(&modified[..256], &[0xABu8; 256],
+            "Round-trip write should recover the modified sector 0 data");
+    }
+
+    #[test]
     fn test_interleave_is_invertible() {
         // Verify the interleave table maps 16 unique values
         let mut seen = [false; 16];
@@ -551,6 +644,124 @@ mod tests {
             seen[v] = true;
         }
     }
+}
+
+/// Inverse of WRITE_TABLE: maps disk nibble byte → 6-bit value (0xFF = invalid).
+const fn make_read_table() -> [u8; 256] {
+    let mut t = [0xFFu8; 256];
+    let mut i = 0usize;
+    while i < 64 {
+        t[WRITE_TABLE[i] as usize] = i as u8;
+        i += 1;
+    }
+    t
+}
+static READ_TABLE: [u8; 256] = make_read_table();
+
+/// Decode a 4-and-4 encoded pair of bytes back to a single byte.
+fn decode_4and4(a: u8, b: u8) -> u8 {
+    ((a & 0x55) << 1) | (b & 0x55)
+}
+
+/// Find a byte sequence in a circular buffer starting at `start`.
+/// Returns the index of the first byte of the sequence, or `None`.
+fn find_sequence(data: &[u8], start: usize, seq: &[u8]) -> Option<usize> {
+    let len = data.len();
+    for i in 0..len {
+        let pos = (start + i) % len;
+        if (0..seq.len()).all(|j| data[(pos + j) % len] == seq[j]) {
+            return Some(pos);
+        }
+    }
+    None
+}
+
+/// Decode 343 nibble bytes back to 256 data bytes (reverse of encode_6and2).
+fn decode_6and2_nibbles(nibble_bytes: &[u8]) -> [u8; 256] {
+    // Translate nibble bytes to 6-bit values
+    let mut raw = [0u8; 343];
+    for i in 0..343 {
+        let val = READ_TABLE[nibble_bytes[i] as usize];
+        raw[i] = if val == 0xFF { 0 } else { val };
+    }
+
+    // XOR unchain: first 86 values are aux (stored in reverse order 85..0)
+    let mut prev = 0u8;
+    let mut aux = [0u8; 86];
+    for i in 0..86 {
+        aux[85 - i] = raw[i] ^ prev;
+        prev = aux[85 - i];
+    }
+
+    let mut primary = [0u8; 256];
+    for i in 0..256 {
+        primary[i] = raw[86 + i] ^ prev;
+        prev = primary[i];
+    }
+
+    // Recombine: reverse the bit swap on aux low-2 bits
+    let mut data = [0u8; 256];
+    for i in 0..256 {
+        let aux_idx = 85 - (i % 86);
+        let shift = (i / 86) * 2;
+        let low2_swapped = (aux[aux_idx] >> shift) & 3;
+        let low2 = ((low2_swapped & 1) << 1) | ((low2_swapped >> 1) & 1);
+        data[i] = (primary[i] << 2) | low2;
+    }
+
+    data
+}
+
+/// Scan a nibble track for up to 16 sectors and decode each via 6-and-2.
+/// Returns an array of 16 raw 256-byte sectors (indexed by physical sector #).
+fn denibblize_track(nibbles: &[u8; TRACK_NIBBLE_SIZE]) -> [[u8; 256]; 16] {
+    let mut sectors = [[0u8; 256]; 16];
+    let len = nibbles.len();
+    let mut pos = 0;
+    let mut found = 0;
+
+    while found < 16 {
+        // Find address field prologue: D5 AA 96
+        let start = match find_sequence(nibbles, pos, &[0xD5, 0xAA, 0x96]) {
+            Some(s) => s,
+            None => break,
+        };
+        pos = (start + 3) % len;
+
+        // Read 8 address field bytes (4 pairs of 4-and-4 encoded: vol, track, sector, checksum)
+        let mut af = [0u8; 8];
+        for b in &mut af {
+            *b = nibbles[pos % len];
+            pos = (pos + 1) % len;
+        }
+        let sector = decode_4and4(af[4], af[5]);
+        if sector >= 16 {
+            continue;
+        }
+        // Skip epilogue DE AA EB
+        pos = (pos + 3) % len;
+
+        // Find data field prologue: D5 AA AD
+        let dstart = match find_sequence(nibbles, pos, &[0xD5, 0xAA, 0xAD]) {
+            Some(s) => s,
+            None => break,
+        };
+        pos = (dstart + 3) % len;
+
+        // Read 343 data nibble bytes
+        let mut data_nibbles = [0u8; 343];
+        for b in &mut data_nibbles {
+            *b = nibbles[pos % len];
+            pos = (pos + 1) % len;
+        }
+        // Skip checksum + epilogue
+        pos = (pos + 3) % len;
+
+        sectors[sector as usize] = decode_6and2_nibbles(&data_nibbles);
+        found += 1;
+    }
+
+    sectors
 }
 
 /// Sector ordering for .dsk/.po disk images.
