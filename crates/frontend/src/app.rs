@@ -159,130 +159,141 @@ impl EmuApp {
         }
 
         if let Some(path) = dialog.pick_file() {
-            if let Some(parent) = path.parent() {
-                self.config.last_rom_dir = Some(parent.to_string_lossy().into_owned());
-                self.config.save();
-            }
+            self.load_rom_at_path(system, path);
+        }
+    }
 
-            match std::fs::read(&path) {
-                Ok(data) => {
-                    let roms_dir = crate::system_roms::resolve_roms_dir(&self.config.system_roms_dir);
+    fn load_rom_at_path(&mut self, system: SystemChoice, path: std::path::PathBuf) {
+        if let Some(parent) = path.parent() {
+            self.config.last_rom_dir = Some(parent.to_string_lossy().into_owned());
+        }
 
-                    let result: Result<Box<dyn SystemEmulator>, String> = match system {
-                        SystemChoice::Nes => {
-                            emu_nes::Nes::from_rom(&data).map(|n| Box::new(n) as Box<dyn SystemEmulator>)
-                        }
-                        SystemChoice::Apple2 => {
-                            let ext = path.extension()
-                                .and_then(|e| e.to_str())
-                                .unwrap_or("")
-                                .to_ascii_lowercase();
+        match std::fs::read(&path) {
+            Ok(data) => {
+                let roms_dir = crate::system_roms::resolve_roms_dir(&self.config.system_roms_dir);
 
-                            if ext == "dsk" || ext == "do" || ext == "po" {
-                                // .dsk/.do/.po disk image: need system ROM + disk II ROM
-                                let sys_rom = crate::system_roms::load_apple2_rom(&roms_dir);
-                                let disk_rom = crate::system_roms::load_disk_ii_rom(&roms_dir);
+                let result: Result<Box<dyn SystemEmulator>, String> = match system {
+                    SystemChoice::Nes => {
+                        emu_nes::Nes::from_rom(&data).map(|n| Box::new(n) as Box<dyn SystemEmulator>)
+                    }
+                    SystemChoice::Apple2 => {
+                        let ext = path.extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
 
-                                match (sys_rom, disk_rom) {
-                                    (Some(sr), Some(dr)) => {
-                                        emu_apple2::Apple2::with_disk(&sr, &dr, &data)
-                                            .map(|a| Box::new(a) as Box<dyn SystemEmulator>)
-                                    }
-                                    (None, _) => Err("Apple II system ROM not found. \
-                                        Place apple2plus.rom in roms/apple2/".into()),
-                                    (_, None) => Err("Disk II ROM not found. \
-                                        Place diskII.c600.c6ff.bin in roms/apple2/".into()),
+                        if ext == "dsk" || ext == "do" || ext == "po" {
+                            // .dsk/.do/.po disk image: need system ROM + disk II ROM
+                            let sys_rom = crate::system_roms::load_apple2_rom(&roms_dir);
+                            let disk_rom = crate::system_roms::load_disk_ii_rom(&roms_dir);
+
+                            match (sys_rom, disk_rom) {
+                                (Some(sr), Some(dr)) => {
+                                    emu_apple2::Apple2::with_disk(&sr, &dr, &data)
+                                        .map(|a| Box::new(a) as Box<dyn SystemEmulator>)
                                 }
-                            } else {
-                                let rom_data = if data.len() >= 8192 {
-                                    data.clone()
-                                } else if let Some(sys_rom) = crate::system_roms::load_apple2_rom(&roms_dir) {
-                                    log::info!("Using system ROM from {}", roms_dir.display());
-                                    sys_rom
-                                } else {
-                                    data.clone()
-                                };
-                                emu_apple2::Apple2::from_rom(&rom_data)
-                                    .map(|a| Box::new(a) as Box<dyn SystemEmulator>)
+                                (None, _) => Err("Apple II system ROM not found. \
+                                    Place apple2plus.rom in roms/apple2/".into()),
+                                (_, None) => Err("Disk II ROM not found. \
+                                    Place diskII.c600.c6ff.bin in roms/apple2/".into()),
                             }
-                        }
-                        SystemChoice::C64 => {
-                            let (basic, kernal, chargen, drive_rom) = crate::system_roms::load_c64_roms(&roms_dir);
-                            let has_roms = basic.is_some() && kernal.is_some() && chargen.is_some();
-
-                            let ext = path.extension()
-                                .and_then(|e| e.to_str())
-                                .unwrap_or("")
-                                .to_ascii_lowercase();
-
-                            if ext == "d64" {
-                                // D64: boot with mounted disk image (needs system ROMs)
-                                if has_roms {
-                                    emu_c64::C64::from_d64_with_drive_rom(
-                                        basic.as_deref().unwrap(),
-                                        kernal.as_deref().unwrap(),
-                                        chargen.as_deref().unwrap(),
-                                        &data,
-                                        drive_rom.as_deref(),
-                                    ).map(|mut c| {
-                                        // Enable IEC trace for the first 6 seconds so
-                                        // bus activity is visible in the log file.
-                                        c.enable_iec_trace();
-                                        Box::new(c) as Box<dyn SystemEmulator>
-                                    })
-                                } else {
-                                    Err("C64 system ROMs required for D64 disk images. \
-                                         Place basic.rom, kernal.rom, chargen.rom in roms/c64/".into())
-                                }
+                        } else {
+                            let rom_data = if data.len() >= 8192 {
+                                data.clone()
+                            } else if let Some(sys_rom) = crate::system_roms::load_apple2_rom(&roms_dir) {
+                                log::info!("Using system ROM from {}", roms_dir.display());
+                                sys_rom
                             } else {
-                                // T64 or PRG: extract PRG data
-                                let prg_result = if ext == "t64" {
-                                    emu_c64::t64_loader::extract_first_prg(&data)
-                                } else {
-                                    Ok(data.clone())
-                                };
-
-                                match prg_result {
-                                    Ok(prg_data) => {
-                                        emu_c64::C64::from_rom(&prg_data).map(|mut c| {
-                                            if has_roms {
-                                                c.load_system_roms(
-                                                    basic.as_deref().unwrap(),
-                                                    kernal.as_deref().unwrap(),
-                                                    chargen.as_deref().unwrap(),
-                                                );
-                                            } else {
-                                                log::warn!(
-                                                    "C64 system ROMs not found in {}. \
-                                                     Place basic.rom, kernal.rom, chargen.rom in roms/c64/",
-                                                    roms_dir.display()
-                                                );
-                                            }
-                                            Box::new(c) as Box<dyn SystemEmulator>
-                                        })
-                                    }
-                                    Err(e) => Err(e),
-                                }
-                            }
-                        }
-                        SystemChoice::Atari2600 => {
-                            emu_atari2600::Atari2600::from_rom(&data).map(|a| Box::new(a) as Box<dyn SystemEmulator>)
-                        }
-                    };
-
-                    match result {
-                        Ok(sys) => {
-                            self.selected_system = Some(system);
-                            self.start_system(sys, Some(&path));
-                        }
-                        Err(e) => {
-                            self.error_msg = Some(format!("Failed to load ROM: {}", e));
+                                data.clone()
+                            };
+                            emu_apple2::Apple2::from_rom(&rom_data)
+                                .map(|a| Box::new(a) as Box<dyn SystemEmulator>)
                         }
                     }
+                    SystemChoice::C64 => {
+                        let (basic, kernal, chargen, drive_rom) = crate::system_roms::load_c64_roms(&roms_dir);
+                        let has_roms = basic.is_some() && kernal.is_some() && chargen.is_some();
+
+                        let ext = path.extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+
+                        if ext == "d64" {
+                            // D64: boot with mounted disk image (needs system ROMs)
+                            if has_roms {
+                                emu_c64::C64::from_d64_with_drive_rom(
+                                    basic.as_deref().unwrap(),
+                                    kernal.as_deref().unwrap(),
+                                    chargen.as_deref().unwrap(),
+                                    &data,
+                                    drive_rom.as_deref(),
+                                ).map(|mut c| {
+                                    // Enable IEC trace for the first 6 seconds so
+                                    // bus activity is visible in the log file.
+                                    c.enable_iec_trace();
+                                    Box::new(c) as Box<dyn SystemEmulator>
+                                })
+                            } else {
+                                Err("C64 system ROMs required for D64 disk images. \
+                                     Place basic.rom, kernal.rom, chargen.rom in roms/c64/".into())
+                            }
+                        } else {
+                            // T64 or PRG: extract PRG data
+                            let prg_result = if ext == "t64" {
+                                emu_c64::t64_loader::extract_first_prg(&data)
+                            } else {
+                                Ok(data.clone())
+                            };
+
+                            match prg_result {
+                                Ok(prg_data) => {
+                                    emu_c64::C64::from_rom(&prg_data).map(|mut c| {
+                                        if has_roms {
+                                            c.load_system_roms(
+                                                basic.as_deref().unwrap(),
+                                                kernal.as_deref().unwrap(),
+                                                chargen.as_deref().unwrap(),
+                                            );
+                                        } else {
+                                            log::warn!(
+                                                "C64 system ROMs not found in {}. \
+                                                 Place basic.rom, kernal.rom, chargen.rom in roms/c64/",
+                                                roms_dir.display()
+                                            );
+                                        }
+                                        Box::new(c) as Box<dyn SystemEmulator>
+                                    })
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                    }
+                    SystemChoice::Atari2600 => {
+                        emu_atari2600::Atari2600::from_rom(&data).map(|a| Box::new(a) as Box<dyn SystemEmulator>)
+                    }
+                };
+
+                match result {
+                    Ok(sys) => {
+                        let system_id = match system {
+                            SystemChoice::Nes       => "NES",
+                            SystemChoice::Apple2    => "Apple2",
+                            SystemChoice::C64       => "C64",
+                            SystemChoice::Atari2600 => "Atari2600",
+                        };
+                        self.config.push_recent_rom(system_id, &path.to_string_lossy());
+                        self.config.save();
+                        self.selected_system = Some(system);
+                        self.start_system(sys, Some(&path));
+                    }
+                    Err(e) => {
+                        self.error_msg = Some(format!("Failed to load ROM: {}", e));
+                    }
                 }
-                Err(e) => {
-                    self.error_msg = Some(format!("Failed to read file: {}", e));
-                }
+            }
+            Err(e) => {
+                self.error_msg = Some(format!("Failed to read file: {}", e));
             }
         }
     }
