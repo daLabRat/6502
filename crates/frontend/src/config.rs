@@ -11,6 +11,7 @@ pub struct Config {
     /// Defaults to `./roms/` next to the executable.
     pub system_roms_dir: String,
     pub crt_mode: CrtMode,
+    pub saves_dir: String,
 }
 
 impl Default for Config {
@@ -21,6 +22,7 @@ impl Default for Config {
             window_scale: 3,
             system_roms_dir: "roms".into(),
             crt_mode: CrtMode::default(),
+            saves_dir: "saves".into(),
         }
     }
 }

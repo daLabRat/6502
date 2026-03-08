@@ -9,6 +9,7 @@ use crate::crt::CrtPipeline;
 use crate::debugger::DebuggerState;
 use crate::input;
 use crate::menu::{self, MenuAction};
+use crate::save_manager::SaveManager;
 use crate::screens::system_select::{SystemAction, SystemChoice};
 
 /// Application screen state.
@@ -32,6 +33,12 @@ pub struct EmuApp {
     render_state: Option<Arc<eframe::egui_wgpu::RenderState>>,
     crt: Option<CrtPipeline>,
     debugger: DebuggerState,
+    save_manager: Option<SaveManager>,
+    save_name_input: String,
+    show_save_dialog: bool,
+    show_browse_saves: bool,
+    pending_load_slot: Option<u8>,
+    pending_load_named: Option<String>,
 }
 
 impl EmuApp {
@@ -58,11 +65,17 @@ impl EmuApp {
             render_state,
             crt: None,
             debugger: DebuggerState::default(),
+            save_manager: None,
+            save_name_input: String::new(),
+            show_save_dialog: false,
+            show_browse_saves: false,
+            pending_load_slot: None,
+            pending_load_named: None,
         }
     }
 
     /// Start a system emulator and switch to the emulation screen.
-    fn start_system(&mut self, mut sys: Box<dyn SystemEmulator>) {
+    fn start_system(&mut self, mut sys: Box<dyn SystemEmulator>, rom_path: Option<&std::path::Path>) {
         if let Some(ref audio) = self.audio {
             sys.set_sample_rate(audio.sample_rate);
         }
@@ -80,6 +93,10 @@ impl EmuApp {
                 self.crt = Some(CrtPipeline::new(rs, w, h));
             }
         }
+
+        let saves_root = std::path::PathBuf::from(&self.config.saves_dir);
+        let sys_name = self.system.as_ref().unwrap().system_name().to_string();
+        self.save_manager = rom_path.map(|p| SaveManager::new(&saves_root, &sys_name, p));
     }
 
     /// Boot a system with just system ROMs (no game file).
@@ -94,7 +111,7 @@ impl EmuApp {
                     let mut c64 = emu_c64::C64::with_roms(&basic, &kernal, &chargen);
                     c64.reset();
                     self.selected_system = Some(system);
-                    self.start_system(Box::new(c64));
+                    self.start_system(Box::new(c64), None);
                 } else {
                     self.error_msg = Some(
                         "C64 system ROMs not found. Place basic.rom, kernal.rom, \
@@ -108,7 +125,7 @@ impl EmuApp {
                     match emu_apple2::Apple2::from_rom(&rom) {
                         Ok(a2) => {
                             self.selected_system = Some(system);
-                            self.start_system(Box::new(a2));
+                            self.start_system(Box::new(a2), None);
                         }
                         Err(e) => self.error_msg = Some(format!("Failed to boot Apple II: {}", e)),
                     }
@@ -256,7 +273,7 @@ impl EmuApp {
                     match result {
                         Ok(sys) => {
                             self.selected_system = Some(system);
-                            self.start_system(sys);
+                            self.start_system(sys, Some(&path));
                         }
                         Err(e) => {
                             self.error_msg = Some(format!("Failed to load ROM: {}", e));
@@ -269,10 +286,64 @@ impl EmuApp {
             }
         }
     }
+
+    fn do_save_slot(&mut self, slot: u8, name: &str) {
+        let Some(ref sys) = self.system else { return };
+        let Some(ref mut sm) = self.save_manager else {
+            self.error_msg = Some("No ROM loaded, cannot save state".into());
+            return;
+        };
+        match sys.save_state() {
+            Ok(data) => {
+                if let Err(e) = sm.save_to_slot(slot, name, &data) {
+                    self.error_msg = Some(format!("Save failed: {}", e));
+                }
+            }
+            Err(e) => self.error_msg = Some(format!("Save state error: {}", e)),
+        }
+    }
+
+    fn do_load_slot(&mut self, slot: u8) {
+        let data = {
+            let Some(ref sm) = self.save_manager else { return };
+            match sm.load_slot(slot) {
+                Ok(d) => d,
+                Err(e) => { self.error_msg = Some(format!("Load failed: {}", e)); return; }
+            }
+        };
+        if let Some(ref mut sys) = self.system {
+            if let Err(e) = sys.load_state(&data) {
+                self.error_msg = Some(format!("Load state error: {}", e));
+            }
+        }
+    }
+
+    fn do_load_named(&mut self, filename: String) {
+        let data = {
+            let Some(ref sm) = self.save_manager else { return };
+            match sm.load_named(&filename) {
+                Ok(d) => d,
+                Err(e) => { self.error_msg = Some(format!("Load failed: {}", e)); return; }
+            }
+        };
+        if let Some(ref mut sys) = self.system {
+            if let Err(e) = sys.load_state(&data) {
+                self.error_msg = Some(format!("Load state error: {}", e));
+            }
+        }
+    }
 }
 
 impl eframe::App for EmuApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Process pending loads (must happen before input/render)
+        if let Some(slot) = self.pending_load_slot.take() {
+            self.do_load_slot(slot);
+        }
+        if let Some(filename) = self.pending_load_named.take() {
+            self.do_load_named(filename);
+        }
+
         // Process input
         let input_events = input::process_egui_input(ctx);
         if let Some(ref mut sys) = self.system {
@@ -281,9 +352,17 @@ impl eframe::App for EmuApp {
             }
         }
 
+        // Build save slot info for menu
+        let supports_saves = self.system.as_ref().map_or(false, |s| s.supports_save_states());
+        let save_slots: Option<[Option<(String, String)>; 8]> = self.save_manager.as_ref().map(|sm| {
+            std::array::from_fn(|i| {
+                sm.slot_info(i as u8 + 1).map(|e| (e.name.clone(), e.saved_at.clone()))
+            })
+        });
+
         // Top menu
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            let action = menu::render_menu(ui, self.system.is_some(), self.config.crt_mode);
+            let action = menu::render_menu(ui, self.system.is_some(), self.config.crt_mode, save_slots.as_ref(), supports_saves);
             match action {
                 MenuAction::LoadRom => {
                     if let Some(system) = self.selected_system {
@@ -316,6 +395,18 @@ impl eframe::App for EmuApp {
                 MenuAction::ToggleDebugger => {
                     self.debugger.open = !self.debugger.open;
                 }
+                MenuAction::SaveToSlot(slot) => {
+                    self.do_save_slot(slot, "");
+                }
+                MenuAction::LoadFromSlot(slot) => {
+                    self.pending_load_slot = Some(slot);
+                }
+                MenuAction::SaveNamed => {
+                    self.show_save_dialog = true;
+                }
+                MenuAction::BrowseSaves => {
+                    self.show_browse_saves = true;
+                }
                 MenuAction::None => {}
             }
         });
@@ -328,6 +419,111 @@ impl eframe::App for EmuApp {
                     self.error_msg = None;
                 }
             });
+        }
+
+        // "Save to new named" dialog
+        if self.show_save_dialog {
+            egui::Window::new("Save State As")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Save name:");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.save_name_input)
+                            .desired_width(200.0)
+                            .hint_text("e.g. Before Boss"),
+                    );
+                    resp.request_focus();
+                    ui.horizontal(|ui| {
+                        let can_save = !self.save_name_input.trim().is_empty();
+                        if ui.add_enabled(can_save, egui::Button::new("Save")).clicked()
+                            || (can_save && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                        {
+                            let name = self.save_name_input.trim().to_string();
+                            self.save_name_input.clear();
+                            self.show_save_dialog = false;
+                            if let (Some(ref sys), Some(ref mut sm)) = (&self.system, &mut self.save_manager) {
+                                match sys.save_state() {
+                                    Ok(data) => {
+                                        if let Err(e) = sm.save_named(&name, &data) {
+                                            self.error_msg = Some(format!("Save failed: {}", e));
+                                        }
+                                    }
+                                    Err(e) => self.error_msg = Some(format!("Save error: {}", e)),
+                                }
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_save_dialog = false;
+                            self.save_name_input.clear();
+                        }
+                    });
+                });
+        }
+
+        // Browse saves window
+        if self.show_browse_saves {
+            if let Some(ref mut sm) = self.save_manager {
+                let named = sm.manifest.named.clone();
+                let mut pending_load: Option<String> = None;
+                let mut pending_delete: Option<String> = None;
+                let mut pending_assign: Option<(String, u8)> = None;
+
+                egui::Window::new("Browse Saves")
+                    .collapsible(false)
+                    .resizable(true)
+                    .default_size([480.0, 300.0])
+                    .show(ctx, |ui| {
+                        if named.is_empty() {
+                            ui.label("No saves yet.");
+                        }
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for entry in &named {
+                                ui.horizontal(|ui| {
+                                    ui.label(&entry.name);
+                                    ui.weak(&entry.saved_at);
+                                    if let Some(slot) = entry.slot {
+                                        ui.label(egui::RichText::new(format!("Slot {}", slot)).weak());
+                                    }
+                                    if ui.small_button("Load").clicked() {
+                                        pending_load = Some(entry.filename.clone());
+                                        self.show_browse_saves = false;
+                                    }
+                                    ui.menu_button("Assign", |ui| {
+                                        for s in 1u8..=8 {
+                                            if ui.button(format!("Slot {}", s)).clicked() {
+                                                pending_assign = Some((entry.filename.clone(), s));
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    });
+                                    if ui.small_button("Delete").clicked() {
+                                        pending_delete = Some(entry.filename.clone());
+                                    }
+                                });
+                            }
+                        });
+                        ui.separator();
+                        if ui.button("Close").clicked() {
+                            self.show_browse_saves = false;
+                        }
+                    });
+
+                if let Some(filename) = pending_load {
+                    self.pending_load_named = Some(filename);
+                }
+                if let Some(filename) = pending_delete {
+                    if let Some(ref mut sm) = self.save_manager {
+                        let _ = sm.delete_named(&filename);
+                    }
+                }
+                if let Some((filename, slot)) = pending_assign {
+                    if let Some(ref mut sm) = self.save_manager {
+                        let _ = sm.assign_to_slot(&filename, slot);
+                    }
+                }
+            }
         }
 
         // Main content
@@ -415,9 +611,12 @@ impl eframe::App for EmuApp {
             }
         });
 
-        // Debugger window
-        if let Some(ref mut sys) = self.system {
-            crate::debugger::render(ctx, &mut self.debugger, sys.as_mut());
+        // Debugger window (separate OS window via egui multi-viewport)
+        if self.debugger.open {
+            if let Some(ref sys) = self.system {
+                let snap = crate::debugger::DebugSnapshot::collect(sys.as_ref(), &self.debugger);
+                crate::debugger::show(ctx, &mut self.debugger, &snap);
+            }
         }
 
         // Keep repainting at vsync rate during emulation; the accumulator
