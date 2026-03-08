@@ -64,7 +64,6 @@ impl Config {
     }
 
     /// Get recent ROMs for a system (most-recent first), or empty slice.
-    #[allow(dead_code)]
     pub fn recent_roms_for(&self, system_id: &str) -> &[String] {
         self.recent_roms.get(system_id).map(|v| v.as_slice()).unwrap_or(&[])
     }

@@ -1,11 +1,21 @@
 use egui::Ui;
 use crate::crt::CrtMode;
+use crate::screens::system_select::SystemChoice;
+
+/// Recent ROM lists passed to the menu renderer, one slice per system.
+pub struct RecentRoms<'a> {
+    pub nes:    &'a [String],
+    pub apple2: &'a [String],
+    pub c64:    &'a [String],
+    pub atari:  &'a [String],
+}
 
 /// Menu action returned by menu rendering.
 #[derive(Debug, PartialEq)]
 pub enum MenuAction {
     None,
-    LoadRom,
+    LoadRomForSystem(SystemChoice),
+    LoadRecentRom(SystemChoice, String),
     Reset,
     Break,
     Quit,
@@ -25,14 +35,41 @@ pub fn render_menu(
     crt_mode: CrtMode,
     save_slots: Option<&[Option<(String, String)>; 8]>,
     supports_saves: bool,
+    recent: &RecentRoms<'_>,
 ) -> MenuAction {
     let mut action = MenuAction::None;
 
     egui::menu::bar(ui, |ui| {
         ui.menu_button("File", |ui| {
-            if ui.button("Load ROM...").clicked() {
-                action = MenuAction::LoadRom;
-                ui.close_menu();
+            let systems: &[(&str, SystemChoice, &[String])] = &[
+                ("NES",          SystemChoice::Nes,       recent.nes),
+                ("Apple II",     SystemChoice::Apple2,    recent.apple2),
+                ("Commodore 64", SystemChoice::C64,       recent.c64),
+                ("Atari 2600",   SystemChoice::Atari2600, recent.atari),
+            ];
+            for (label, system, recents) in systems {
+                ui.menu_button(*label, |ui| {
+                    if ui.button("Load ROM...").clicked() {
+                        action = MenuAction::LoadRomForSystem(*system);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if recents.is_empty() {
+                        ui.add_enabled(false, egui::Button::new("(no recent files)"));
+                    } else {
+                        for path_str in recents.iter() {
+                            let basename = std::path::Path::new(path_str.as_str())
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(path_str.as_str());
+                            let resp = ui.button(basename).on_hover_text(path_str.as_str());
+                            if resp.clicked() {
+                                action = MenuAction::LoadRecentRom(*system, path_str.clone());
+                                ui.close_menu();
+                            }
+                        }
+                    }
+                });
             }
             ui.separator();
             if ui.button("Quit").clicked() {

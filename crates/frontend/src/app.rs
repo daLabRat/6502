@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::crt::CrtPipeline;
 use crate::debugger::DebuggerState;
 use crate::input;
-use crate::menu::{self, MenuAction};
+use crate::menu::{self, MenuAction, RecentRoms};
 use crate::save_manager::SaveManager;
 use crate::screens::system_select::{SystemAction, SystemChoice};
 
@@ -373,12 +373,19 @@ impl eframe::App for EmuApp {
 
         // Top menu
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            let action = menu::render_menu(ui, self.system.is_some(), self.config.crt_mode, save_slots.as_ref(), supports_saves);
+            let recent = RecentRoms {
+                nes:    self.config.recent_roms_for("NES"),
+                apple2: self.config.recent_roms_for("Apple2"),
+                c64:    self.config.recent_roms_for("C64"),
+                atari:  self.config.recent_roms_for("Atari2600"),
+            };
+            let action = menu::render_menu(ui, self.system.is_some(), self.config.crt_mode, save_slots.as_ref(), supports_saves, &recent);
             match action {
-                MenuAction::LoadRom => {
-                    if let Some(system) = self.selected_system {
-                        self.load_rom(system);
-                    }
+                MenuAction::LoadRomForSystem(system) => {
+                    self.load_rom(system);
+                }
+                MenuAction::LoadRecentRom(system, path) => {
+                    self.load_rom_at_path(system, std::path::PathBuf::from(&path));
                 }
                 MenuAction::Reset => {
                     if let Some(ref mut sys) = self.system {
