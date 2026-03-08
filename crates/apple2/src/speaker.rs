@@ -3,13 +3,13 @@ use emu_common::AudioSample;
 /// Apple II speaker - 1-bit toggle audio.
 /// Accessing $C030 toggles the speaker state.
 pub struct Speaker {
-    state: bool,
+    pub(crate) state: bool,
     /// True after a toggle, cleared after a silence timeout.
-    active: bool,
+    pub(crate) active: bool,
     /// Cycles since the last toggle (for silence detection).
-    cycles_since_toggle: u64,
+    pub(crate) cycles_since_toggle: u64,
     sample_buffer: Vec<AudioSample>,
-    cycle_count: u64,
+    pub(crate) cycle_count: u64,
     cycles_per_sample: f64,
     sample_accumulator: f64,
 }

@@ -16,7 +16,7 @@ pub struct Apple2Bus {
     pub disk_ii: DiskII,
     pub framebuffer: FrameBuffer,
 
-    cycle_count: u64,
+    pub(crate) cycle_count: u64,
     cycles_per_frame: u64,
     frame_ready: bool,
     pub(crate) frame_count: u32,

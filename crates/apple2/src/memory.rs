@@ -1,3 +1,5 @@
+use crate::snapshot::MemorySnapshot;
+
 /// Apple II memory system.
 /// 48KB main RAM + 16KB language card RAM + ROM.
 /// Includes 64KB auxiliary RAM for IIe 80-column card support.
@@ -233,6 +235,35 @@ impl Memory {
             }
             _ => {}
         }
+    }
+
+    pub fn snapshot(&self) -> MemorySnapshot {
+        MemorySnapshot {
+            ram: self.ram.to_vec(),
+            lc_ram: self.lc_ram.to_vec(),
+            lc_bank2: self.lc_bank2.to_vec(),
+            lc_read_enable: self.lc_read_enable,
+            lc_write_enable: self.lc_write_enable,
+            lc_prewrite: self.lc_prewrite,
+            lc_bank1: self.lc_bank1,
+            aux_ram: self.aux_ram.clone(),
+            aux_lc_ram: self.aux_lc_ram.clone(),
+            aux_lc_bank2: self.aux_lc_bank2.clone(),
+        }
+    }
+
+    pub fn restore(&mut self, s: &MemorySnapshot) {
+        self.ram.copy_from_slice(&s.ram);
+        self.lc_ram.copy_from_slice(&s.lc_ram);
+        self.lc_bank2.copy_from_slice(&s.lc_bank2);
+        self.lc_read_enable = s.lc_read_enable;
+        self.lc_write_enable = s.lc_write_enable;
+        self.lc_prewrite = s.lc_prewrite;
+        self.lc_bank1 = s.lc_bank1;
+        self.aux_ram.clone_from(&s.aux_ram);
+        self.aux_lc_ram.clone_from(&s.aux_lc_ram);
+        self.aux_lc_bank2.clone_from(&s.aux_lc_bank2);
+        // rom is NOT restored — it is reloaded from disk at startup
     }
 
     /// Handle language card soft switches ($C080-$C08F).

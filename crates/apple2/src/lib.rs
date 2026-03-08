@@ -2,6 +2,7 @@ pub mod bus;
 pub mod disk_ii;
 pub mod keyboard;
 pub mod memory;
+mod snapshot;
 pub mod soft_switch;
 pub mod speaker;
 pub mod video;
@@ -125,4 +126,44 @@ impl SystemEmulator for Apple2 {
         emu_cpu::disassemble_6502(|a| self.cpu.bus.peek(a), addr)
     }
     fn step_instruction(&mut self) { self.cpu.step(); }
+
+    fn supports_save_states(&self) -> bool { true }
+
+    fn save_state(&self) -> Result<Vec<u8>, String> {
+        let snap = crate::snapshot::Apple2Snapshot {
+            cpu: self.cpu.snapshot(),
+            memory: self.cpu.bus.memory.snapshot(),
+            switches: self.cpu.bus.switches.snapshot(),
+            keyboard_latch: self.cpu.bus.keyboard.latch,
+            keyboard_strobe: self.cpu.bus.keyboard.strobe,
+            speaker_state: self.cpu.bus.speaker.state,
+            speaker_active: self.cpu.bus.speaker.active,
+            speaker_cycles_since_toggle: self.cpu.bus.speaker.cycles_since_toggle,
+            speaker_cycle_count: self.cpu.bus.speaker.cycle_count,
+            bus_cycle_count: self.cpu.bus.cycle_count,
+        };
+        let bytes = bincode::serde::encode_to_vec(&snap, bincode::config::standard())
+            .map_err(|e| e.to_string())?;
+        // Use hardcoded stable identifier — NOT self.system_name() — so renaming
+        // the display name never breaks existing save files.
+        Ok(emu_common::save_encode("Apple2", &bytes))
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> Result<(), String> {
+        let payload = emu_common::save_decode("Apple2", data)?;
+        let (snap, _): (crate::snapshot::Apple2Snapshot, _) =
+            bincode::serde::decode_from_slice(payload, bincode::config::standard())
+                .map_err(|e| e.to_string())?;
+        self.cpu.restore(&snap.cpu);
+        self.cpu.bus.memory.restore(&snap.memory);
+        self.cpu.bus.switches.restore(&snap.switches);
+        self.cpu.bus.keyboard.latch = snap.keyboard_latch;
+        self.cpu.bus.keyboard.strobe = snap.keyboard_strobe;
+        self.cpu.bus.speaker.state = snap.speaker_state;
+        self.cpu.bus.speaker.active = snap.speaker_active;
+        self.cpu.bus.speaker.cycles_since_toggle = snap.speaker_cycles_since_toggle;
+        self.cpu.bus.speaker.cycle_count = snap.speaker_cycle_count;
+        self.cpu.bus.cycle_count = snap.bus_cycle_count;
+        Ok(())
+    }
 }

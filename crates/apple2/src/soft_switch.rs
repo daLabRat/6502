@@ -1,3 +1,5 @@
+use crate::snapshot::SoftSwitchSnapshot;
+
 /// Apple II soft switch flags.
 /// Soft switches control video modes, speaker, and other I/O.
 /// Includes IIe-style extended switches for 80-column card support.
@@ -61,6 +63,30 @@ impl SoftSwitches {
             is_iie: false,
             intc8rom: false,
         }
+    }
+
+    pub fn snapshot(&self) -> SoftSwitchSnapshot {
+        SoftSwitchSnapshot {
+            text_mode: self.text_mode, mixed_mode: self.mixed_mode,
+            page2: self.page2, hires: self.hires,
+            an0: self.an0, an1: self.an1, an2: self.an2, an3: self.an3,
+            store80: self.store80, ramrd: self.ramrd, ramwrt: self.ramwrt,
+            altzp: self.altzp, intcxrom: self.intcxrom, slotc3rom: self.slotc3rom,
+            col80: self.col80, altcharset: self.altcharset,
+            lc_bank2: self.lc_bank2, lc_read_enable: self.lc_read_enable,
+            vbl: self.vbl, is_iie: self.is_iie, intc8rom: self.intc8rom,
+        }
+    }
+
+    pub fn restore(&mut self, s: &SoftSwitchSnapshot) {
+        self.text_mode = s.text_mode; self.mixed_mode = s.mixed_mode;
+        self.page2 = s.page2; self.hires = s.hires;
+        self.an0 = s.an0; self.an1 = s.an1; self.an2 = s.an2; self.an3 = s.an3;
+        self.store80 = s.store80; self.ramrd = s.ramrd; self.ramwrt = s.ramwrt;
+        self.altzp = s.altzp; self.intcxrom = s.intcxrom; self.slotc3rom = s.slotc3rom;
+        self.col80 = s.col80; self.altcharset = s.altcharset;
+        self.lc_bank2 = s.lc_bank2; self.lc_read_enable = s.lc_read_enable;
+        self.vbl = s.vbl; self.is_iie = s.is_iie; self.intc8rom = s.intc8rom;
     }
 
     /// Handle read/write to soft switch addresses ($C050-$C05F).
