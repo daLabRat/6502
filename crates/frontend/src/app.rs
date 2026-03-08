@@ -164,6 +164,14 @@ impl EmuApp {
     }
 
     fn load_rom_at_path(&mut self, system: SystemChoice, path: std::path::PathBuf) {
+        let system_id = match system {
+            SystemChoice::Nes       => "NES",
+            SystemChoice::Apple2    => "Apple2",
+            SystemChoice::C64       => "C64",
+            SystemChoice::Atari2600 => "Atari2600",
+        };
+        let path_str = path.to_string_lossy().into_owned();
+
         if let Some(parent) = path.parent() {
             self.config.last_rom_dir = Some(parent.to_string_lossy().into_owned());
         }
@@ -276,13 +284,7 @@ impl EmuApp {
 
                 match result {
                     Ok(sys) => {
-                        let system_id = match system {
-                            SystemChoice::Nes       => "NES",
-                            SystemChoice::Apple2    => "Apple2",
-                            SystemChoice::C64       => "C64",
-                            SystemChoice::Atari2600 => "Atari2600",
-                        };
-                        self.config.push_recent_rom(system_id, &path.to_string_lossy());
+                        self.config.push_recent_rom(system_id, &path_str);
                         self.config.save();
                         self.selected_system = Some(system);
                         self.start_system(sys, Some(&path));
@@ -293,6 +295,11 @@ impl EmuApp {
                 }
             }
             Err(e) => {
+                // Prune stale entry from recent list
+                if let Some(list) = self.config.recent_roms.get_mut(system_id) {
+                    list.retain(|p| p != &path_str);
+                }
+                self.config.save();
                 self.error_msg = Some(format!("Failed to read file: {}", e));
             }
         }
