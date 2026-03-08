@@ -16,9 +16,15 @@ pub fn render(fb: &mut FrameBuffer, memory: &Memory, switches: &SoftSwitches, fl
         text::render_text(fb, memory, switches, flash_on);
     } else if switches.hires {
         if switches.mixed_mode {
-            // Hi-res with text at bottom
-            hires::render_hires(fb, memory, switches, 160);
-            text::render_text_lines(fb, memory, switches, 20, 24, flash_on);
+            if switches.dhgr {
+                hires::render_dhgr(fb, memory, switches, 160);
+                text::render_text_lines(fb, memory, switches, 20, 24, flash_on);
+            } else {
+                hires::render_hires(fb, memory, switches, 160);
+                text::render_text_lines(fb, memory, switches, 20, 24, flash_on);
+            }
+        } else if switches.dhgr {
+            hires::render_dhgr(fb, memory, switches, 192);
         } else {
             hires::render_hires(fb, memory, switches, 192);
         }

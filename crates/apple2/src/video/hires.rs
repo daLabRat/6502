@@ -23,6 +23,37 @@ static HIRES_COLORS: [[u32; 2]; 2] = [
 /// Display width for bounds checking.
 const WIDTH: u32 = 560;
 
+/// Render double hi-res mode (DHGR): 560 real pixels per line.
+/// Interleaves 7 bits from aux hi-res and 7 bits from main hi-res per byte pair.
+pub fn render_dhgr(
+    fb: &mut FrameBuffer,
+    memory: &Memory,
+    switches: &SoftSwitches,
+    max_scanline: u32,
+) {
+    for line in 0..max_scanline.min(192) {
+        let addr = hires_line_addr(line as usize, switches.page2);
+        let mut px = 0u32;
+
+        for byte_col in 0..40u16 {
+            let aux_byte  = memory.read_aux_hires(addr + byte_col);
+            let main_byte = memory.read_main_hires(addr + byte_col);
+
+            // 7 bits from aux, then 7 bits from main = 14 pixels per column
+            for bit in 0..7u32 {
+                let on = (aux_byte >> bit) & 1 != 0;
+                fb.set_pixel_rgb(px, line, if on { 0xFFFFFF } else { 0x000000 });
+                px += 1;
+            }
+            for bit in 0..7u32 {
+                let on = (main_byte >> bit) & 1 != 0;
+                fb.set_pixel_rgb(px, line, if on { 0xFFFFFF } else { 0x000000 });
+                px += 1;
+            }
+        }
+    }
+}
+
 /// Render hi-res mode (560x192, each pixel doubled horizontally).
 pub fn render_hires(
     fb: &mut FrameBuffer,
