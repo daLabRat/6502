@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::crt::CrtMode;
 
 /// Application configuration, persisted to config.ron.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,6 +10,7 @@ pub struct Config {
     /// Directory containing system ROMs (BIOS/firmware files).
     /// Defaults to `./roms/` next to the executable.
     pub system_roms_dir: String,
+    pub crt_mode: CrtMode,
 }
 
 impl Default for Config {
@@ -18,6 +20,7 @@ impl Default for Config {
             last_rom_dir: None,
             window_scale: 3,
             system_roms_dir: "roms".into(),
+            crt_mode: CrtMode::default(),
         }
     }
 }

@@ -5,6 +5,7 @@ mod input;
 mod menu;
 mod screens;
 mod system_roms;
+mod crt;
 
 use std::io::Write;
 
