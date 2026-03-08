@@ -162,4 +162,32 @@ impl<B: Bus> Cpu6502<B> {
         self.sp = self.sp.wrapping_add(1);
         self.bus.read(0x0100 | self.sp as u16)
     }
+
+    pub fn snapshot(&self) -> crate::snapshot::Cpu6502Snapshot {
+        crate::snapshot::Cpu6502Snapshot {
+            pc: self.pc,
+            sp: self.sp,
+            a: self.a,
+            x: self.x,
+            y: self.y,
+            p: self.p.bits(),
+            bcd_enabled: self.bcd_enabled,
+            cmos_mode: self.cmos_mode,
+            total_cycles: self.total_cycles,
+            jammed: self.jammed,
+        }
+    }
+
+    pub fn restore(&mut self, s: &crate::snapshot::Cpu6502Snapshot) {
+        self.pc = s.pc;
+        self.sp = s.sp;
+        self.a = s.a;
+        self.x = s.x;
+        self.y = s.y;
+        self.p = crate::flags::StatusFlags::from_bits_truncate(s.p);
+        self.bcd_enabled = s.bcd_enabled;
+        self.cmos_mode = s.cmos_mode;
+        self.total_cycles = s.total_cycles;
+        self.jammed = s.jammed;
+    }
 }
