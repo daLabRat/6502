@@ -11,6 +11,8 @@ pub mod camerica;
 pub mod mmc2;
 pub mod mmc4;
 pub mod fme7;
+pub mod vrc6;
+pub mod namco163;
 
 use super::Mirroring;
 
@@ -61,6 +63,9 @@ pub fn create(
         11 => Ok(Box::new(color_dreams::ColorDreams::new(prg_rom, chr_rom, mirroring))),
         34 => Ok(Box::new(bnrom::BnRom::new(prg_rom, chr_rom, mirroring))),
         66 => Ok(Box::new(gxrom::GxRom::new(prg_rom, chr_rom, mirroring))),
+        19 => Ok(Box::new(namco163::Namco163::new(prg_rom, chr_rom, mirroring))),
+        24 => Ok(Box::new(vrc6::Vrc6::new(prg_rom, chr_rom, mirroring, false))), // VRC6a
+        26 => Ok(Box::new(vrc6::Vrc6::new(prg_rom, chr_rom, mirroring, true))),  // VRC6b
         69 => Ok(Box::new(fme7::Fme7::new(prg_rom, chr_rom, mirroring))),
         71 => Ok(Box::new(camerica::Camerica::new(prg_rom, chr_rom, mirroring))),
         _ => Err(format!("Unsupported mapper: {}", id)),
