@@ -9,10 +9,11 @@ pub enum MenuAction {
     Break,
     Quit,
     BackToSystemSelect,
+    CycleCrtMode,
 }
 
 /// Render the menu bar. Returns the action requested, if any.
-pub fn render_menu(ui: &mut Ui, has_system: bool) -> MenuAction {
+pub fn render_menu(ui: &mut Ui, has_system: bool, crt_label: &str) -> MenuAction {
     let mut action = MenuAction::None;
 
     egui::menu::bar(ui, |ui| {
@@ -41,6 +42,13 @@ pub fn render_menu(ui: &mut Ui, has_system: bool) -> MenuAction {
                 ui.separator();
                 if ui.button("Change System").clicked() {
                     action = MenuAction::BackToSystemSelect;
+                    ui.close_menu();
+                }
+            });
+
+            ui.menu_button("Display", |ui| {
+                if ui.button(format!("Mode: {} →", crt_label)).clicked() {
+                    action = MenuAction::CycleCrtMode;
                     ui.close_menu();
                 }
             });

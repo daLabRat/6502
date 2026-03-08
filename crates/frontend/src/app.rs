@@ -276,7 +276,8 @@ impl eframe::App for EmuApp {
 
         // Top menu
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            let action = menu::render_menu(ui, self.system.is_some());
+            let crt_label = self.config.crt_mode.label();
+            let action = menu::render_menu(ui, self.system.is_some(), crt_label);
             match action {
                 MenuAction::LoadRom => {
                     if let Some(system) = self.selected_system {
@@ -301,6 +302,10 @@ impl eframe::App for EmuApp {
                     self.screen = Screen::SystemSelect;
                     self.system = None;
                     self.texture = None;
+                }
+                MenuAction::CycleCrtMode => {
+                    self.config.crt_mode = self.config.crt_mode.next();
+                    self.config.save();
                 }
                 MenuAction::None => {}
             }
