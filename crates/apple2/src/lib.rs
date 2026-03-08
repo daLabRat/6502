@@ -130,6 +130,18 @@ impl SystemEmulator for Apple2 {
 
     fn supports_save_states(&self) -> bool { true }
 
+    fn take_modified_disk_image(&mut self) -> Option<Vec<u8>> {
+        if self.cpu.bus.disk_ii.is_dirty() {
+            let data = self.cpu.bus.disk_ii.get_modified_dsk();
+            if data.is_some() {
+                self.cpu.bus.disk_ii.clear_dirty();
+            }
+            data
+        } else {
+            None
+        }
+    }
+
     fn save_state(&self) -> Result<Vec<u8>, String> {
         let snap = crate::snapshot::Apple2Snapshot {
             cpu: self.cpu.snapshot(),

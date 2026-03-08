@@ -93,4 +93,8 @@ pub trait SystemEmulator {
 
     /// Returns true if this system implements save/load state.
     fn supports_save_states(&self) -> bool { false }
+
+    /// If the system has a modified disk image (e.g. Disk II writes), return
+    /// the new image bytes and clear the dirty flag. Returns `None` otherwise.
+    fn take_modified_disk_image(&mut self) -> Option<Vec<u8>> { None }
 }

@@ -39,6 +39,8 @@ pub struct EmuApp {
     show_browse_saves: bool,
     pending_load_slot: Option<u8>,
     pending_load_named: Option<String>,
+    /// Path to the currently loaded disk image (for write-back on modification).
+    loaded_disk_path: Option<std::path::PathBuf>,
 }
 
 impl EmuApp {
@@ -71,6 +73,7 @@ impl EmuApp {
             show_browse_saves: false,
             pending_load_slot: None,
             pending_load_named: None,
+            loaded_disk_path: None,
         }
     }
 
@@ -287,6 +290,16 @@ impl EmuApp {
                         self.config.push_recent_rom(system_id, &path_str);
                         self.config.save();
                         self.selected_system = Some(system);
+                        // Track disk image path for write-back (Apple II Disk II)
+                        let ext = path.extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+                        if matches!(ext.as_str(), "dsk" | "do" | "po") {
+                            self.loaded_disk_path = Some(path.clone());
+                        } else {
+                            self.loaded_disk_path = None;
+                        }
                         self.start_system(sys, Some(&path));
                     }
                     Err(e) => {
@@ -589,6 +602,15 @@ impl eframe::App for EmuApp {
                             while self.frame_accum >= target {
                                 self.frame_accum -= target;
                                 sys.step_frame();
+
+                                // Write-back modified disk image (Apple II Disk II writes)
+                                if let Some(dsk) = sys.take_modified_disk_image() {
+                                    if let Some(ref disk_path) = self.loaded_disk_path {
+                                        if let Err(e) = std::fs::write(disk_path, &dsk) {
+                                            log::warn!("Failed to save disk image: {}", e);
+                                        }
+                                    }
+                                }
 
                                 let count = sys.audio_samples(&mut self.audio_buffer);
                                 if let Some(ref mut audio) = self.audio {
