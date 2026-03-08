@@ -128,24 +128,25 @@ impl Apu {
             self.noise.tick_timer();
         }
 
-        // Frame counter (every ~7457 CPU cycles for 240Hz)
+        // Frame counter (NESDev spec half-cycle corrected timings)
         self.frame_counter += 1;
         match self.frame_counter_mode {
             0 => {
                 // 4-step sequence
                 match self.frame_counter {
-                    3729 => self.clock_quarter_frame(),
-                    7457 => {
+                    3728 => self.clock_quarter_frame(),
+                    7456 => {
                         self.clock_quarter_frame();
                         self.clock_half_frame();
                     }
-                    11186 => self.clock_quarter_frame(),
+                    11185 => self.clock_quarter_frame(),
+                    14914 => {
+                        if !self.frame_irq_inhibit { self.frame_irq_pending = true; }
+                    }
                     14915 => {
                         self.clock_quarter_frame();
                         self.clock_half_frame();
-                        if !self.frame_irq_inhibit {
-                            self.frame_irq_pending = true;
-                        }
+                        if !self.frame_irq_inhibit { self.frame_irq_pending = true; }
                         self.frame_counter = 0;
                     }
                     _ => {}
@@ -154,17 +155,11 @@ impl Apu {
             1 => {
                 // 5-step sequence
                 match self.frame_counter {
-                    3729 => self.clock_quarter_frame(),
-                    7457 => {
-                        self.clock_quarter_frame();
-                        self.clock_half_frame();
-                    }
-                    11186 => self.clock_quarter_frame(),
-                    18641 => {
-                        self.clock_quarter_frame();
-                        self.clock_half_frame();
-                        self.frame_counter = 0;
-                    }
+                    3728  => self.clock_quarter_frame(),
+                    7456  => { self.clock_quarter_frame(); self.clock_half_frame(); }
+                    11185 => self.clock_quarter_frame(),
+                    18640 => { self.clock_quarter_frame(); self.clock_half_frame(); }
+                    18641 => { self.frame_counter = 0; }
                     _ => {}
                 }
             }
