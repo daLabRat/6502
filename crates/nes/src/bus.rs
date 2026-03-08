@@ -107,17 +107,17 @@ impl Bus for NesBus {
 
         // Each CPU cycle = 3 PPU cycles
         let total_cpu_cycles = cycles as u32 + dma_stall;
-        let ppu_cycles = total_cpu_cycles * 3;
-        for _ in 0..ppu_cycles {
+        for _ in 0..total_cpu_cycles * 3 {
             self.ppu.step(self.cartridge.mapper.as_mut());
         }
 
-        // APU runs at CPU clock rate
+        // APU runs at CPU clock rate; DMC DMA steals 4 extra cycles per fetch
+        let mut extra_apu = 0u32;
         for _ in 0..total_cpu_cycles {
             self.apu.step();
             self.cartridge.mapper.cpu_tick();
 
-            // Service DMC DMA request
+            // Service DMC DMA request — stall 4 cycles (worst-case alignment)
             if let Some(addr) = self.apu.dmc.dma_request.take() {
                 let byte = match addr {
                     0x0000..=0x1FFF => self.ram[(addr & 0x07FF) as usize],
@@ -125,7 +125,16 @@ impl Bus for NesBus {
                     _ => 0,
                 };
                 self.apu.dmc.receive_dma_byte(byte);
+                extra_apu += 4;
             }
+        }
+
+        // Run extra stall cycles through APU + PPU
+        for _ in 0..extra_apu {
+            self.apu.step();
+        }
+        for _ in 0..extra_apu * 3 {
+            self.ppu.step(self.cartridge.mapper.as_mut());
         }
 
         // Check PPU NMI
