@@ -1,3 +1,4 @@
+pub mod ay3_8910;
 pub mod bus;
 pub mod disk_ii;
 pub mod keyboard;
