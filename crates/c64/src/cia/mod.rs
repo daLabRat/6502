@@ -215,4 +215,13 @@ impl Cia {
     pub fn joy2_up(&mut self, bit: u8) {
         self.joy2 |= 1 << bit;
     }
+
+    // ── Debugger accessors ────────────────────────────────────────────────
+
+    pub fn timer_a_counter(&self) -> u16  { self.timer_a_counter }
+    pub fn timer_a_latch(&self)   -> u16  { self.timer_a_latch }
+    pub fn timer_a_running(&self) -> bool { self.timer_a_running }
+    pub fn timer_b_counter(&self) -> u16  { self.timer_b_counter }
+    pub fn timer_b_latch(&self)   -> u16  { self.timer_b_latch }
+    pub fn timer_b_running(&self) -> bool { self.timer_b_running }
 }

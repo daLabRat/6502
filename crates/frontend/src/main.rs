@@ -1,11 +1,12 @@
 mod app;
 mod audio;
 mod config;
+mod crt;
+mod debugger;
 mod input;
 mod menu;
 mod screens;
 mod system_roms;
-mod crt;
 
 use std::io::Write;
 

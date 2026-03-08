@@ -3,7 +3,7 @@ pub mod cartridge;
 pub mod riot;
 pub mod tia;
 
-use emu_common::{AudioSample, Button, FrameBuffer, InputEvent, SystemEmulator};
+use emu_common::{AudioSample, Bus, Button, CpuDebugState, FrameBuffer, InputEvent, SystemEmulator};
 use emu_cpu::Cpu6502;
 use bus::Atari2600Bus;
 
@@ -127,4 +127,14 @@ impl SystemEmulator for Atari2600 {
     fn display_height(&self) -> u32 { tia::SCREEN_HEIGHT }
     fn target_fps(&self) -> f64 { 59.94 }
     fn system_name(&self) -> &str { "Atari 2600" }
+
+    fn cpu_state(&self) -> CpuDebugState {
+        CpuDebugState { pc: self.cpu.pc, sp: self.cpu.sp, a: self.cpu.a,
+            x: self.cpu.x, y: self.cpu.y, flags: self.cpu.p.bits(), cycles: self.cpu.total_cycles }
+    }
+    fn peek_memory(&self, addr: u16) -> u8 { self.cpu.bus.peek(addr) }
+    fn disassemble(&self, addr: u16) -> (String, u16) {
+        emu_cpu::disassemble_6502(|a| self.cpu.bus.peek(a), addr)
+    }
+    fn step_instruction(&mut self) { self.cpu.step(); }
 }

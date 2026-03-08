@@ -11,6 +11,7 @@ pub enum MenuAction {
     Quit,
     BackToSystemSelect,
     SetCrtMode(CrtMode),
+    ToggleDebugger,
 }
 
 /// Render the menu bar. Returns the action requested, if any.
@@ -31,6 +32,10 @@ pub fn render_menu(ui: &mut Ui, has_system: bool, crt_mode: CrtMode) -> MenuActi
         });
 
         if has_system {
+            if ui.button("Debugger").clicked() {
+                action = MenuAction::ToggleDebugger;
+            }
+
             ui.menu_button("System", |ui| {
                 if ui.button("Reset").clicked() {
                     action = MenuAction::Reset;

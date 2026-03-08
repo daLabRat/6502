@@ -6,6 +6,7 @@ use emu_common::SystemEmulator;
 use crate::audio::AudioOutput;
 use crate::config::Config;
 use crate::crt::CrtPipeline;
+use crate::debugger::DebuggerState;
 use crate::input;
 use crate::menu::{self, MenuAction};
 use crate::screens::system_select::{SystemAction, SystemChoice};
@@ -30,6 +31,7 @@ pub struct EmuApp {
     frame_accum:     std::time::Duration,
     render_state: Option<Arc<eframe::egui_wgpu::RenderState>>,
     crt: Option<CrtPipeline>,
+    debugger: DebuggerState,
 }
 
 impl EmuApp {
@@ -55,6 +57,7 @@ impl EmuApp {
             frame_accum:     std::time::Duration::ZERO,
             render_state,
             crt: None,
+            debugger: DebuggerState::default(),
         }
     }
 
@@ -310,6 +313,9 @@ impl eframe::App for EmuApp {
                     self.config.crt_mode = mode;
                     self.config.save();
                 }
+                MenuAction::ToggleDebugger => {
+                    self.debugger.open = !self.debugger.open;
+                }
                 MenuAction::None => {}
             }
         });
@@ -342,19 +348,35 @@ impl eframe::App for EmuApp {
                 }
                 Screen::Emulation => {
                     if let Some(ref mut sys) = self.system {
-                        let target = std::time::Duration::from_secs_f64(1.0 / sys.target_fps());
-                        let now = std::time::Instant::now();
-                        self.frame_accum += now.duration_since(self.last_frame_time);
-                        self.last_frame_time = now;
-                        // Cap accumulator to avoid spiral-of-death if we fall behind.
-                        self.frame_accum = self.frame_accum.min(target * 4);
-                        while self.frame_accum >= target {
-                            self.frame_accum -= target;
-                            sys.step_frame();
+                        if self.debugger.paused {
+                            // Single-step on request
+                            if self.debugger.step {
+                                self.debugger.step = false;
+                                sys.step_instruction();
+                                let pc = sys.cpu_state().pc;
+                                self.debugger.check_breakpoint(pc);
+                            }
+                            // Drain audio so device doesn't underrun
+                            let _ = sys.audio_samples(&mut self.audio_buffer);
+                        } else {
+                            let target = std::time::Duration::from_secs_f64(1.0 / sys.target_fps());
+                            let now = std::time::Instant::now();
+                            self.frame_accum += now.duration_since(self.last_frame_time);
+                            self.last_frame_time = now;
+                            // Cap accumulator to avoid spiral-of-death if we fall behind.
+                            self.frame_accum = self.frame_accum.min(target * 4);
+                            while self.frame_accum >= target {
+                                self.frame_accum -= target;
+                                sys.step_frame();
 
-                            let count = sys.audio_samples(&mut self.audio_buffer);
-                            if let Some(ref mut audio) = self.audio {
-                                audio.push_samples(&self.audio_buffer[..count], self.config.volume);
+                                let count = sys.audio_samples(&mut self.audio_buffer);
+                                if let Some(ref mut audio) = self.audio {
+                                    audio.push_samples(&self.audio_buffer[..count], self.config.volume);
+                                }
+
+                                // Check breakpoints after each frame
+                                let pc = sys.cpu_state().pc;
+                                self.debugger.check_breakpoint(pc);
                             }
                         }
 
@@ -392,6 +414,11 @@ impl eframe::App for EmuApp {
                 }
             }
         });
+
+        // Debugger window
+        if let Some(ref mut sys) = self.system {
+            crate::debugger::render(ctx, &mut self.debugger, sys.as_mut());
+        }
 
         // Keep repainting at vsync rate during emulation; the accumulator
         // above controls how many step_frame calls happen per repaint.

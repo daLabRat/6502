@@ -359,4 +359,27 @@ impl Sid {
         self.sample_buffer.drain(..count);
         count
     }
+
+    /// Per-voice debug snapshot: (frequency_hz, pulse_width, waveform_name, env_level, state_name).
+    pub fn voice_debug(&self) -> [(f64, u16, &'static str, u8, &'static str); 3] {
+        self.voices.iter().map(|v| {
+            let freq_hz = v.frequency as f64 * 985248.0 / 16_777_216.0;
+            let wave = match (v.control >> 4) & 0xF {
+                0x1 => "TRI",
+                0x2 => "SAW",
+                0x4 => "PUL",
+                0x8 => "NOI",
+                0x3 => "T+S",
+                0x6 => "S+P",
+                _   => "OFF",
+            };
+            let state = match v.envelope_state {
+                EnvelopeState::Attack  => "ATK",
+                EnvelopeState::Decay   => "DEC",
+                EnvelopeState::Sustain => "SUS",
+                EnvelopeState::Release => "REL",
+            };
+            (freq_hz, v.pulse_width, wave, v.envelope, state)
+        }).collect::<Vec<_>>().try_into().unwrap()
+    }
 }

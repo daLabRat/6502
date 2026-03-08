@@ -11,7 +11,7 @@ pub mod t64_loader;
 pub mod via;
 pub mod vic_ii;
 
-use emu_common::{AudioSample, Button, FrameBuffer, InputEvent, SystemEmulator};
+use emu_common::{AudioSample, Bus, Button, CpuDebugState, DebugSection, FrameBuffer, InputEvent, SystemEmulator};
 use emu_cpu::Cpu6502;
 use bus::C64Bus;
 use drive1541::bus::Drive1541Bus;
@@ -646,4 +646,81 @@ impl SystemEmulator for C64 {
     fn display_height(&self) -> u32 { vic_ii::SCREEN_HEIGHT }
     fn target_fps(&self) -> f64 { 50.0 } // PAL
     fn system_name(&self) -> &str { "Commodore 64" }
+
+    fn cpu_state(&self) -> CpuDebugState {
+        CpuDebugState {
+            pc:     self.cpu.pc,
+            sp:     self.cpu.sp,
+            a:      self.cpu.a,
+            x:      self.cpu.x,
+            y:      self.cpu.y,
+            flags:  self.cpu.p.bits(),
+            cycles: self.cpu.total_cycles,
+        }
+    }
+
+    fn peek_memory(&self, addr: u16) -> u8 {
+        self.cpu.bus.peek(addr)
+    }
+
+    fn disassemble(&self, addr: u16) -> (String, u16) {
+        emu_cpu::disassemble_6502(|a| self.cpu.bus.peek(a), addr)
+    }
+
+    fn step_instruction(&mut self) {
+        self.cpu.step();
+    }
+
+    fn system_debug_panels(&self) -> Vec<DebugSection> {
+        let vic = &self.cpu.bus.vic;
+        let regs = &vic.registers;
+
+        // VIC-II
+        let mode_str = match (regs[0x11] >> 5) & 0x3 {
+            0 => if regs[0x16] & 0x10 != 0 { "MCM Text" } else { "Text" },
+            1 => "MCM Bitmap",
+            2 => if regs[0x16] & 0x10 != 0 { "MCM Bitmap" } else { "Bitmap" },
+            3 => "Extended Color",
+            _ => "?",
+        };
+        let raster = ((regs[0x11] as u16 & 0x80) << 1) | regs[0x12] as u16;
+        let spr_en = regs[0x15];
+        let vic_sec = DebugSection::new("VIC-II")
+            .row("Mode",        mode_str)
+            .row("Raster",      format!("{}", raster))
+            .row("Scroll X/Y",  format!("{} / {}", regs[0x16] & 7, regs[0x11] & 7))
+            .row("Sprites",     format!("{:08b}", spr_en))
+            .row("Border",      format!("${:02X}", regs[0x20]))
+            .row("Background",  format!("${:02X}", regs[0x21]));
+
+        // SID
+        let voices = self.cpu.bus.sid.voice_debug();
+        let mut sid_sec = DebugSection::new("SID");
+        for (i, (freq, pw, wave, env, state)) in voices.iter().enumerate() {
+            sid_sec = sid_sec.row(
+                format!("V{}", i + 1),
+                format!("{:.0}Hz  {}  pw:{:03X}  env:{:3}/255 ({})", freq, wave, pw, env, state),
+            );
+        }
+
+        // CIA1
+        let c1 = &self.cpu.bus.cia1;
+        let cia1_sec = DebugSection::new("CIA1 (IRQ/Kbd)")
+            .row("Timer A", format!("${:04X}/{:04X} {}", c1.timer_a_counter(), c1.timer_a_latch(),
+                                    if c1.timer_a_running() { "run" } else { "stop" }))
+            .row("Timer B", format!("${:04X}/{:04X} {}", c1.timer_b_counter(), c1.timer_b_latch(),
+                                    if c1.timer_b_running() { "run" } else { "stop" }))
+            .row("ICR",     format!("data:${:02X} mask:${:02X}", c1.icr_data, c1.icr_mask));
+
+        // CIA2
+        let c2 = &self.cpu.bus.cia2;
+        let cia2_sec = DebugSection::new("CIA2 (NMI/IEC)")
+            .row("Timer A", format!("${:04X}/{:04X} {}", c2.timer_a_counter(), c2.timer_a_latch(),
+                                    if c2.timer_a_running() { "run" } else { "stop" }))
+            .row("Timer B", format!("${:04X}/{:04X} {}", c2.timer_b_counter(), c2.timer_b_latch(),
+                                    if c2.timer_b_running() { "run" } else { "stop" }))
+            .row("PRA/DDRA", format!("${:02X}/${:02X}", c2.pra, c2.ddra));
+
+        vec![vic_sec, sid_sec, cia1_sec, cia2_sec]
+    }
 }

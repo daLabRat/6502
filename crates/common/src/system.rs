@@ -1,3 +1,4 @@
+use crate::debug::{CpuDebugState, DebugSection};
 use crate::framebuffer::FrameBuffer;
 use crate::input::InputEvent;
 use crate::audio::AudioSample;
@@ -47,4 +48,23 @@ pub trait SystemEmulator {
 
     /// Name of this system for display in the UI.
     fn system_name(&self) -> &str;
+
+    // ── Debugger interface ────────────────────────────────────────────────
+
+    /// Snapshot of CPU registers for the debugger.
+    fn cpu_state(&self) -> CpuDebugState { CpuDebugState::default() }
+
+    /// Side-effect-free read of the CPU address space.
+    fn peek_memory(&self, addr: u16) -> u8 { let _ = addr; 0 }
+
+    /// Disassemble one instruction at `addr`.
+    /// Returns (formatted string, address of next instruction).
+    fn disassemble(&self, addr: u16) -> (String, u16) { ("???".into(), addr.wrapping_add(1)) }
+
+    /// Execute exactly one CPU instruction.
+    fn step_instruction(&mut self) {}
+
+    /// System-specific debug panels (VIC-II, SID, CIA, PPU, etc.).
+    /// Returns named sections of key→value rows; the debugger renders them generically.
+    fn system_debug_panels(&self) -> Vec<DebugSection> { vec![] }
 }
