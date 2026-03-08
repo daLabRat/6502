@@ -117,7 +117,7 @@ impl Riot {
 
     pub fn snapshot(&self) -> RiotSnapshot {
         RiotSnapshot {
-            ram: self.ram.to_vec(),
+            ram: self.ram,
             swcha: self.swcha, swcha_out: self.swcha_out, swacnt: self.swacnt,
             swchb: self.swchb, swbcnt: self.swbcnt,
             timer_value: self.timer_value,
@@ -129,7 +129,7 @@ impl Riot {
     }
 
     pub fn restore(&mut self, s: &RiotSnapshot) {
-        self.ram.copy_from_slice(&s.ram);
+        self.ram = s.ram;
         self.swcha = s.swcha; self.swcha_out = s.swcha_out; self.swacnt = s.swacnt;
         self.swchb = s.swchb; self.swbcnt = s.swbcnt;
         self.timer_value = s.timer_value;

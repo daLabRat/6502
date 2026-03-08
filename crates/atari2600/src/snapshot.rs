@@ -1,5 +1,38 @@
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use emu_cpu::Cpu6502Snapshot;
+
+/// serde helper for [u8; 128] — serde 1.x only auto-impls up to [T; 32].
+mod serde_u8_128 {
+    use super::*;
+    use serde::de::{SeqAccess, Visitor};
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(arr: &[u8; 128], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_bytes(arr)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 128], D::Error> {
+        struct A128Visitor;
+        impl<'de> Visitor<'de> for A128Visitor {
+            type Value = [u8; 128];
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("byte array of length 128")
+            }
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                v.try_into().map_err(|_| E::invalid_length(v.len(), &self))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut arr = [0u8; 128];
+                for (i, slot) in arr.iter_mut().enumerate() {
+                    *slot = seq.next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
+                }
+                Ok(arr)
+            }
+        }
+        d.deserialize_bytes(A128Visitor)
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct AudioChannelSnapshot {
@@ -45,7 +78,8 @@ pub struct TiaSnapshot {
 
 #[derive(Serialize, Deserialize)]
 pub struct RiotSnapshot {
-    pub ram: Vec<u8>,
+    #[serde(with = "serde_u8_128")]
+    pub ram: [u8; 128],
     pub swcha: u8, pub swcha_out: u8, pub swacnt: u8,
     pub swchb: u8, pub swbcnt: u8,
     pub timer_value: u8,
