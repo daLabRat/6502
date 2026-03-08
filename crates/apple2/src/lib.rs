@@ -9,7 +9,7 @@ pub mod soft_switch;
 pub mod speaker;
 pub mod video;
 
-use emu_common::{AudioSample, Bus, Button, CpuDebugState, FrameBuffer, InputEvent, SystemEmulator};
+use emu_common::{AudioSample, Bus, Button, CpuDebugState, DebugSection, FrameBuffer, InputEvent, SystemEmulator};
 use emu_cpu::Cpu6502;
 use bus::Apple2Bus;
 
@@ -143,6 +143,52 @@ impl SystemEmulator for Apple2 {
     fn step_instruction(&mut self) { self.cpu.step(); }
 
     fn supports_save_states(&self) -> bool { true }
+
+    fn system_debug_panels(&self) -> Vec<DebugSection> {
+        let sw = &self.cpu.bus.switches;
+        let disk = &self.cpu.bus.disk_ii;
+
+        let switches = DebugSection::new("Soft Switches")
+            .row("Text/HiRes/Mixed/Page2",
+                format!("{} {} {} {}",
+                    sw.text_mode as u8, sw.hires as u8,
+                    sw.mixed_mode as u8, sw.page2 as u8))
+            .row("80Col/DHGR/AltChar/AltZP",
+                format!("{} {} {} {}",
+                    sw.col80 as u8, sw.dhgr as u8,
+                    sw.altcharset as u8, sw.altzp as u8));
+
+        let disk_panel = DebugSection::new("Disk II")
+            .row("Track", disk.current_track.to_string())
+            .row("Motor", if disk.motor_on { "ON" } else { "OFF" })
+            .row("Write mode", if disk.write_mode { "YES" } else { "NO" })
+            .row("Dirty", if disk.is_dirty() { "YES" } else { "NO" })
+            .row("Loaded", if disk.disk_loaded { "YES" } else { "NO" })
+            .row("Byte pos", disk.byte_position.to_string());
+
+        let mut panels = vec![switches, disk_panel];
+
+        if self.cpu.bus.mockingboard_present {
+            let mb = &self.cpu.bus.mockingboard;
+            let mut mb_panel = DebugSection::new("Mockingboard");
+            for (i, ay) in [&mb.ay0, &mb.ay1].iter().enumerate() {
+                mb_panel = mb_panel.row(
+                    format!("AY{} mixer/env_vol", i),
+                    format!("{:02X} / {}", ay.regs[7], ay.env_vol));
+                for ch in 0..3usize {
+                    let period = ((ay.regs[ch * 2 + 1] as u16 & 0xF) << 8)
+                        | ay.regs[ch * 2] as u16;
+                    let vol = ay.regs[8 + ch] & 0x1F;
+                    mb_panel = mb_panel.row(
+                        format!("AY{} Ch{} period/vol", i, ch),
+                        format!("{} / {}", period, vol));
+                }
+            }
+            panels.push(mb_panel);
+        }
+
+        panels
+    }
 
     fn take_modified_disk_image(&mut self) -> Option<Vec<u8>> {
         if self.cpu.bus.disk_ii.is_dirty() {
