@@ -79,6 +79,7 @@ impl EmuApp {
         if let Some(ref audio) = self.audio {
             sys.set_sample_rate(audio.sample_rate);
         }
+        let sys_name = sys.system_name().to_string();
         self.system = Some(sys);
         self.screen = Screen::Emulation;
         self.texture = None;
@@ -95,7 +96,6 @@ impl EmuApp {
         }
 
         let saves_root = std::path::PathBuf::from(&self.config.saves_dir);
-        let sys_name = self.system.as_ref().unwrap().system_name().to_string();
         self.save_manager = rom_path.map(|p| SaveManager::new(&saves_root, &sys_name, p));
     }
 

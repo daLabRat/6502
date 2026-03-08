@@ -73,12 +73,18 @@ impl SaveManager {
         let hour = s % 24; let days = s / 24;
         let year = 1970 + days / 365;
         let day_of_year = days % 365;
-        let month = day_of_year / 30 + 1;
+        let month = (day_of_year / 30 + 1).min(12);
         let day = day_of_year % 30 + 1;
         format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, min, sec)
     }
 
     pub fn save_to_slot(&mut self, slot: u8, name: &str, data: &[u8]) -> Result<(), String> {
+        // Clear any existing named entry that claims this slot
+        for ne in &mut self.manifest.named {
+            if ne.slot == Some(slot) {
+                ne.slot = None;
+            }
+        }
         let filename = format!("slot{}.state", slot);
         let path = self.dir.join(&filename);
         std::fs::write(&path, data).map_err(|e| e.to_string())?;
@@ -133,7 +139,13 @@ impl SaveManager {
 
     pub fn load_named(&self, filename: &str) -> Result<Vec<u8>, String> {
         let path = self.dir.join(filename);
-        std::fs::read(&path).map_err(|e| e.to_string())
+        // Validate path stays within saves directory
+        let dir_canon = self.dir.canonicalize().map_err(|e| e.to_string())?;
+        let path_canon = path.canonicalize().map_err(|e| e.to_string())?;
+        if !path_canon.starts_with(&dir_canon) {
+            return Err("Invalid save filename: path escapes saves directory".into());
+        }
+        std::fs::read(&path_canon).map_err(|e| e.to_string())
     }
 
     pub fn assign_to_slot(&mut self, filename: &str, slot: u8) -> Result<(), String> {
@@ -160,7 +172,15 @@ impl SaveManager {
 
     pub fn delete_named(&mut self, filename: &str) -> Result<(), String> {
         let path = self.dir.join(filename);
-        let _ = std::fs::remove_file(&path);
+        // Validate path stays within saves directory (only if file exists)
+        if path.exists() {
+            let dir_canon = self.dir.canonicalize().map_err(|e| e.to_string())?;
+            let path_canon = path.canonicalize().map_err(|e| e.to_string())?;
+            if !path_canon.starts_with(&dir_canon) {
+                return Err("Invalid save filename: path escapes saves directory".into());
+            }
+            let _ = std::fs::remove_file(&path_canon);
+        }
         self.manifest.slots.retain(|_, v| v.filename != filename);
         self.manifest.named.retain(|n| n.filename != filename);
         self.save_manifest();
