@@ -2,8 +2,10 @@ pub mod bus;
 pub mod cartridge;
 pub mod riot;
 pub mod tia;
+mod snapshot;
 
 use emu_common::{AudioSample, Bus, Button, CpuDebugState, FrameBuffer, InputEvent, SystemEmulator};
+use crate::snapshot::Atari2600Snapshot;
 use emu_cpu::Cpu6502;
 use bus::Atari2600Bus;
 
@@ -113,6 +115,32 @@ impl SystemEmulator for Atari2600 {
             }
             _ => {}
         }
+    }
+
+    fn supports_save_states(&self) -> bool { true }
+
+    fn save_state(&self) -> Result<Vec<u8>, String> {
+        let snap = Atari2600Snapshot {
+            cpu:  self.cpu.snapshot(),
+            tia:  self.cpu.bus.tia.snapshot(),
+            riot: self.cpu.bus.riot.snapshot(),
+        };
+        let bytes = bincode::serde::encode_to_vec(&snap, bincode::config::standard())
+            .map_err(|e| e.to_string())?;
+        // Use a hardcoded stable identifier — NOT self.system_name() — so renaming the
+        // display name never breaks existing save files.
+        Ok(emu_common::save_encode("Atari2600", &bytes))
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> Result<(), String> {
+        let payload = emu_common::save_decode("Atari2600", data)?;
+        let (snap, _): (Atari2600Snapshot, _) =
+            bincode::serde::decode_from_slice(payload, bincode::config::standard())
+                .map_err(|e| e.to_string())?;
+        self.cpu.restore(&snap.cpu);
+        self.cpu.bus.tia.restore(&snap.tia);
+        self.cpu.bus.riot.restore(&snap.riot);
+        Ok(())
     }
 
     fn reset(&mut self) {

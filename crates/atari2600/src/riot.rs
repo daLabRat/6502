@@ -1,3 +1,5 @@
+use crate::snapshot::RiotSnapshot;
+
 /// RIOT (RAM-I/O-Timer) chip - MOS 6532.
 /// 128 bytes RAM, timer, I/O ports for switches/joysticks.
 pub struct Riot {
@@ -111,6 +113,30 @@ impl Riot {
             }
             _ => {}
         }
+    }
+
+    pub fn snapshot(&self) -> RiotSnapshot {
+        RiotSnapshot {
+            ram: self.ram.to_vec(),
+            swcha: self.swcha, swcha_out: self.swcha_out, swacnt: self.swacnt,
+            swchb: self.swchb, swbcnt: self.swbcnt,
+            timer_value: self.timer_value,
+            timer_interval: self.timer_interval,
+            timer_subcycles: self.timer_subcycles,
+            timer_expired: self.timer_expired,
+            timer_flag: self.timer_flag,
+        }
+    }
+
+    pub fn restore(&mut self, s: &RiotSnapshot) {
+        self.ram.copy_from_slice(&s.ram);
+        self.swcha = s.swcha; self.swcha_out = s.swcha_out; self.swacnt = s.swacnt;
+        self.swchb = s.swchb; self.swbcnt = s.swbcnt;
+        self.timer_value = s.timer_value;
+        self.timer_interval = s.timer_interval;
+        self.timer_subcycles = s.timer_subcycles;
+        self.timer_expired = s.timer_expired;
+        self.timer_flag = s.timer_flag;
     }
 
     /// Step one CPU cycle.

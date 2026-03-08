@@ -1,4 +1,5 @@
 use emu_common::FrameBuffer;
+use crate::snapshot::{AudioChannelSnapshot, TiaSnapshot};
 
 /// TIA (Television Interface Adaptor) - the heart of the Atari 2600.
 /// No framebuffer in hardware - "races the beam" to generate display.
@@ -690,5 +691,76 @@ impl Tia {
         let size = 1u8 << ((self.ctrlpf >> 4) & 0x03);
         let diff = ((x as i16 - self.resbl as i16).rem_euclid(160)) as u8;
         diff < size
+    }
+
+    pub fn snapshot(&self) -> TiaSnapshot {
+        let ch = |c: &AudioChannel| AudioChannelSnapshot {
+            audc: c.audc, audf: c.audf, audv: c.audv,
+            freq_counter: c.freq_counter,
+            poly4: c.poly4, poly5: c.poly5, poly9: c.poly9,
+            div_counter: c.div_counter, output: c.output,
+        };
+        TiaSnapshot {
+            pf0: self.pf0, pf1: self.pf1, pf2: self.pf2,
+            pf_reflect: self.pf_reflect, pf_score: self.pf_score, pf_priority: self.pf_priority,
+            grp0: self.grp0, grp1: self.grp1, grp0_old: self.grp0_old, grp1_old: self.grp1_old,
+            resp0: self.resp0, resp1: self.resp1,
+            refp0: self.refp0, refp1: self.refp1,
+            vdelp0: self.vdelp0, vdelp1: self.vdelp1,
+            enam0: self.enam0, enam1: self.enam1,
+            resm0: self.resm0, resm1: self.resm1,
+            resmp0: self.resmp0, resmp1: self.resmp1,
+            enabl: self.enabl, enabl_old: self.enabl_old, resbl: self.resbl, vdelbl: self.vdelbl,
+            colup0: self.colup0, colup1: self.colup1, colupf: self.colupf, colubk: self.colubk,
+            nusiz0: self.nusiz0, nusiz1: self.nusiz1, ctrlpf: self.ctrlpf,
+            hmp0: self.hmp0, hmp1: self.hmp1, hmm0: self.hmm0, hmm1: self.hmm1, hmbl: self.hmbl,
+            hmove_pending: self.hmove_pending, hmove_blanking: self.hmove_blanking,
+            resp0_delay: self.resp0_delay, resp0_pending: self.resp0_pending,
+            resp1_delay: self.resp1_delay, resp1_pending: self.resp1_pending,
+            resm0_delay: self.resm0_delay, resm0_pending: self.resm0_pending,
+            resm1_delay: self.resm1_delay, resm1_pending: self.resm1_pending,
+            resbl_delay: self.resbl_delay, resbl_pending: self.resbl_pending,
+            inpt4: self.inpt4, inpt5: self.inpt5,
+            collision: self.collision,
+            scanline: self.scanline, clock: self.clock,
+            wsync: self.wsync, vsync: self.vsync, vblank: self.vblank, frame_ready: self.frame_ready,
+            audio_clock_counter: self.audio_clock_counter,
+            audio_ch: [ch(&self.audio_ch[0]), ch(&self.audio_ch[1])],
+        }
+    }
+
+    pub fn restore(&mut self, s: &TiaSnapshot) {
+        let rc = |c: &mut AudioChannel, sc: &AudioChannelSnapshot| {
+            c.audc = sc.audc; c.audf = sc.audf; c.audv = sc.audv;
+            c.freq_counter = sc.freq_counter;
+            c.poly4 = sc.poly4; c.poly5 = sc.poly5; c.poly9 = sc.poly9;
+            c.div_counter = sc.div_counter; c.output = sc.output;
+        };
+        self.pf0 = s.pf0; self.pf1 = s.pf1; self.pf2 = s.pf2;
+        self.pf_reflect = s.pf_reflect; self.pf_score = s.pf_score; self.pf_priority = s.pf_priority;
+        self.grp0 = s.grp0; self.grp1 = s.grp1; self.grp0_old = s.grp0_old; self.grp1_old = s.grp1_old;
+        self.resp0 = s.resp0; self.resp1 = s.resp1;
+        self.refp0 = s.refp0; self.refp1 = s.refp1;
+        self.vdelp0 = s.vdelp0; self.vdelp1 = s.vdelp1;
+        self.enam0 = s.enam0; self.enam1 = s.enam1;
+        self.resm0 = s.resm0; self.resm1 = s.resm1;
+        self.resmp0 = s.resmp0; self.resmp1 = s.resmp1;
+        self.enabl = s.enabl; self.enabl_old = s.enabl_old; self.resbl = s.resbl; self.vdelbl = s.vdelbl;
+        self.colup0 = s.colup0; self.colup1 = s.colup1; self.colupf = s.colupf; self.colubk = s.colubk;
+        self.nusiz0 = s.nusiz0; self.nusiz1 = s.nusiz1; self.ctrlpf = s.ctrlpf;
+        self.hmp0 = s.hmp0; self.hmp1 = s.hmp1; self.hmm0 = s.hmm0; self.hmm1 = s.hmm1; self.hmbl = s.hmbl;
+        self.hmove_pending = s.hmove_pending; self.hmove_blanking = s.hmove_blanking;
+        self.resp0_delay = s.resp0_delay; self.resp0_pending = s.resp0_pending;
+        self.resp1_delay = s.resp1_delay; self.resp1_pending = s.resp1_pending;
+        self.resm0_delay = s.resm0_delay; self.resm0_pending = s.resm0_pending;
+        self.resm1_delay = s.resm1_delay; self.resm1_pending = s.resm1_pending;
+        self.resbl_delay = s.resbl_delay; self.resbl_pending = s.resbl_pending;
+        self.inpt4 = s.inpt4; self.inpt5 = s.inpt5;
+        self.collision = s.collision;
+        self.scanline = s.scanline; self.clock = s.clock;
+        self.wsync = s.wsync; self.vsync = s.vsync; self.vblank = s.vblank; self.frame_ready = s.frame_ready;
+        self.audio_clock_counter = s.audio_clock_counter;
+        rc(&mut self.audio_ch[0], &s.audio_ch[0]);
+        rc(&mut self.audio_ch[1], &s.audio_ch[1]);
     }
 }
