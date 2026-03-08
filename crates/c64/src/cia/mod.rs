@@ -257,7 +257,6 @@ impl Cia {
         self.icr_data = s.icr_data;
         self.icr_mask = s.icr_mask;
         self.irq_pending = s.irq_pending;
-        self.is_cia1 = s.is_cia1;
         self.keyboard_matrix = s.keyboard_matrix;
         self.joy2 = s.joy2;
     }

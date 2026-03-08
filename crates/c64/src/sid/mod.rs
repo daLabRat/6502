@@ -422,6 +422,8 @@ impl Sid {
         self.volume = s.volume;
         self.filter_bp = s.filter_bp;
         self.filter_lp = s.filter_lp;
+        if !self.filter_bp.is_finite() { self.filter_bp = 0.0; }
+        if !self.filter_lp.is_finite() { self.filter_lp = 0.0; }
     }
 
     pub fn drain_samples(&mut self, out: &mut [AudioSample]) -> usize {

@@ -439,6 +439,9 @@ impl SystemEmulator for C64 {
         self.cpu.bus.sid.restore(&snap.sid);
         self.cpu.bus.cia1.restore(&snap.cia1);
         self.cpu.bus.cia2.restore(&snap.cia2);
+        self.pending_prg = None;
+        self.boot_frames = 0;
+        self.pending_releases.clear();
         Ok(())
     }
 
