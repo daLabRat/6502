@@ -1,9 +1,11 @@
+use std::sync::Arc;
 use eframe::egui;
 use egui::TextureHandle;
 use emu_common::SystemEmulator;
 
 use crate::audio::AudioOutput;
 use crate::config::Config;
+use crate::crt::CrtPipeline;
 use crate::input;
 use crate::menu::{self, MenuAction};
 use crate::screens::system_select::{SystemAction, SystemChoice};
@@ -25,6 +27,8 @@ pub struct EmuApp {
     audio_buffer: Vec<f32>,
     error_msg: Option<String>,
     last_frame_time: std::time::Instant,
+    render_state: Option<Arc<eframe::egui_wgpu::RenderState>>,
+    crt: Option<CrtPipeline>,
 }
 
 impl EmuApp {
@@ -34,6 +38,8 @@ impl EmuApp {
         if audio.is_none() {
             log::warn!("Failed to initialize audio output");
         }
+
+        let render_state = _cc.wgpu_render_state.clone().map(Arc::new);
 
         Self {
             screen: Screen::SystemSelect,
@@ -45,6 +51,8 @@ impl EmuApp {
             audio_buffer: vec![0.0; 2048],
             error_msg: None,
             last_frame_time: std::time::Instant::now(),
+            render_state,
+            crt: None,
         }
     }
 
@@ -57,6 +65,14 @@ impl EmuApp {
         self.screen = Screen::Emulation;
         self.texture = None;
         self.error_msg = None;
+
+        if let Some(ref rs) = self.render_state {
+            if let Some(ref sys) = self.system {
+                let w = sys.display_width();
+                let h = sys.display_height();
+                self.crt = Some(CrtPipeline::new(rs, w, h));
+            }
+        }
     }
 
     /// Boot a system with just system ROMs (no game file).
@@ -318,24 +334,42 @@ impl eframe::App for EmuApp {
                 }
                 Screen::Emulation => {
                     if let Some(ref mut sys) = self.system {
-                        // Only step emulation when a full frame's worth of wall time has elapsed
                         let target = std::time::Duration::from_secs_f64(1.0 / sys.target_fps());
                         let now = std::time::Instant::now();
                         if now.duration_since(self.last_frame_time) >= target {
                             self.last_frame_time = now;
                             sys.step_frame();
 
-                            // Drain audio
                             let count = sys.audio_samples(&mut self.audio_buffer);
                             if let Some(ref mut audio) = self.audio {
                                 audio.push_samples(&self.audio_buffer[..count], self.config.volume);
                             }
+
+                            let fb = sys.framebuffer();
+                            if let Some(ref crt) = self.crt {
+                                crt.upload(&fb.pixels);
+                                crt.apply(self.config.crt_mode);
+                            }
                         }
 
-                        // Always render the last completed frame
                         let fb = sys.framebuffer();
                         let aspect = sys.display_aspect_ratio() as f32;
-                        crate::screens::emulation::render(ui, &mut self.texture, fb, aspect);
+                        if let Some(ref crt) = self.crt {
+                            let available = ui.available_size();
+                            let (w, h) = if available.x / available.y > aspect {
+                                (available.y * aspect, available.y)
+                            } else {
+                                (available.x, available.x / aspect)
+                            };
+                            ui.centered_and_justified(|ui| {
+                                ui.image(egui::load::SizedTexture::new(
+                                    crt.texture_id,
+                                    egui::vec2(w, h),
+                                ));
+                            });
+                        } else {
+                            crate::screens::emulation::render(ui, &mut self.texture, fb, aspect);
+                        }
                     }
                 }
             }
