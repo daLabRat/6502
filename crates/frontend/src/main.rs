@@ -5,6 +5,7 @@ mod crt;
 mod debugger;
 mod input;
 mod menu;
+mod save_manager;
 mod screens;
 mod system_roms;
 
