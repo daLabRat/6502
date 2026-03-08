@@ -56,6 +56,7 @@ impl Config {
 
     /// Add a ROM path to the recent list for a system, deduplicating and capping at 5.
     /// `system_id` should be: "NES", "Apple2", "C64", "Atari2600".
+    #[allow(dead_code)]
     pub fn push_recent_rom(&mut self, system_id: &str, path: &str) {
         let list = self.recent_roms.entry(system_id.to_string()).or_default();
         list.retain(|p| p != path);
@@ -64,6 +65,7 @@ impl Config {
     }
 
     /// Get recent ROMs for a system (most-recent first), or empty slice.
+    #[allow(dead_code)]
     pub fn recent_roms_for(&self, system_id: &str) -> &[String] {
         self.recent_roms.get(system_id).map(|v| v.as_slice()).unwrap_or(&[])
     }
