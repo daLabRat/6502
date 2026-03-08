@@ -477,6 +477,14 @@ impl VicII {
     }
 
     pub fn restore(&mut self, s: &VicSnapshot) {
+        if s.registers.len() != 64 {
+            log::warn!("VIC restore: unexpected registers length {}", s.registers.len());
+            return;
+        }
+        if s.color_ram.len() != 1024 {
+            log::warn!("VIC restore: unexpected color_ram length {}", s.color_ram.len());
+            return;
+        }
         self.registers.copy_from_slice(&s.registers);
         self.raster_line = s.raster_line;
         self.raster_irq_line = s.raster_irq_line;

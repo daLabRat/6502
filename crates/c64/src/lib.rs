@@ -429,6 +429,9 @@ impl SystemEmulator for C64 {
             bincode::serde::decode_from_slice(payload, bincode::config::standard())
                 .map_err(|e| e.to_string())?;
         self.cpu.restore(&snap.cpu);
+        if snap.ram.len() != 65536 {
+            return Err(format!("C64 save state: expected 65536 bytes for RAM, got {}", snap.ram.len()));
+        }
         self.cpu.bus.memory.ram.copy_from_slice(&snap.ram);
         self.cpu.bus.memory.cpu_port = snap.cpu_port;
         self.cpu.bus.memory.cpu_port_dir = snap.cpu_port_dir;
