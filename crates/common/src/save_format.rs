@@ -17,7 +17,9 @@ pub fn encode(system_name: &str, snapshot_bytes: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&crc.to_le_bytes());
-    out.extend_from_slice(&(snapshot_bytes.len() as u32).to_le_bytes());
+    let payload_len = u32::try_from(snapshot_bytes.len())
+        .expect("snapshot exceeds 4 GiB limit");
+    out.extend_from_slice(&payload_len.to_le_bytes());
     out.extend_from_slice(&[0u8; 2]); // reserved
     out.extend_from_slice(snapshot_bytes);
     out
@@ -44,6 +46,7 @@ pub fn decode<'a>(system_name: &str, data: &'a [u8]) -> Result<&'a [u8], String>
     if data.len() < 16 + len {
         return Err("Save state truncated".into());
     }
+    // Note: extra bytes after the payload are ignored to allow future header expansions.
     Ok(&data[16..16 + len])
 }
 
